@@ -1,0 +1,126 @@
+ekf_local:
+  ros__parameters:
+    frequency: 25.0              # Filter update rate
+    sensor_timeout: 0.5           # Timeout if no sensor data is received 
+    two_d_mode: true              # If true, Z, roll, and pitch are ignored
+
+    # Frame Settings
+    map_frame: map                # Global fixed frame
+    odom_frame: odom              # Drift-accumulating frame
+    base_link_frame: base_link    # Robot center frame
+    world_frame: odom             # Target frame for this filter (odom -> base_link)
+
+    # Sensor Input (IMU)
+    imu0: imu                     # Topic name
+
+    # imu0_config: Determines which values to use.
+    # Format: 
+              # X, Y, Z,             (Position)
+              # Roll, Pitch, Yaw,    (Orientation)
+              # Vx, Vy, Vz,          (Linear Velocity)
+              # Vroll, Vpitch, Vyaw, (Angular Velocity)
+              # Ax, Ay, Az           (Linear Acceleration)
+
+    imu0_config: [false, false, false,  # Position: Not used from IMU
+                  true,  true,  true,   # Orientation: Used
+                  false, false, false,  # Linear Vel: Not used
+                  true,  true,  true,   # Angular Vel: Used
+                  true,  true,  true]   # Linear Accel: Used
+
+    imu0_differential: false      # If true, uses difference from previous step
+    imu0_relative: false          # If true, sets initial measurement to 0
+    imu0_remove_gravitational_acceleration: true # Removes gravity vector 
+
+    # Covariance Matrices
+    # Defines uncertainty. Lower values = higher trust in that variable.
+    
+    # process_noise_covariance: Model uncertainty
+    process_noise_covariance: [0.01, 0.01, 0.01, 
+                               0.01, 0.01, 0.01, 
+                               0.01, 0.01, 0.01, 
+                               0.01, 0.01, 0.01, 
+                               0.01, 0.01, 0.01]
+
+    # initial_estimate_covariance: Uncertainty of starting state
+    initial_estimate_covariance: [1.0, 1.0, 1.0, 
+                                  1e-3, 1e-3, 1e-3, 
+                                  1.0, 1.0, 1.0, 
+                                  1e-3, 1e-3, 1e-3, 
+                                  1.0, 1.0, 1.0]
+
+ekf_global:
+  ros__parameters:
+    frequency: 25.0
+    sensor_timeout: 0.5
+    two_d_mode: true
+
+    # Frame Settings
+    map_frame: map                
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: map              # Target frame for this filter (map -> odom)
+
+    # Sensor Input (GPS + IMU)
+    # pose0: /abs_xy  # 발행하는 노드가 없어 미사용 (UWB 등 다른 절대 위치원 연결 시 재사용)
+    #
+    # # pose0_config: Use only absolute X and Y position
+    # pose0_config: [true,  true,  false,
+    #                false, false, false,
+    #                false, false, false,
+    #                false, false, false,
+    #                false, false, false]
+
+    # navsat_transform_node가 발행하는 GPS 기반 카르테시안 오도메트리 (odometry/gps)를 사용
+    odom0: odometry/gps
+    odom0_config: [true,  true,  false,
+                   false, false, false,
+                   false, false, false,
+                   false, false, false,
+                   false, false, false]
+    odom0_queue_size: 10
+    odom0_differential: false
+    odom0_relative: false
+
+    imu0: /imu
+    imu0_config: [false, false, false,
+                  true,  true,  true,
+                  false, false, false,
+                  true,  true,  true,
+                  true,  true,  true]
+    imu0_remove_gravitational_acceleration: true
+
+    # Covariance Matrices
+    # GPS position noise might be higher, so X/Y covariance is adjusted compared to local EKF.
+    process_noise_covariance: [0.01, 0.01, 0.01, 
+                               0.01, 0.01, 0.01, 
+                               0.01, 0.01, 0.01, 
+                               0.01, 0.01, 0.01, 
+                               0.01, 0.01, 0.01]
+
+    initial_estimate_covariance: [1.0, 1.0, 1.0, 
+                                  1e-3, 1e-3, 1e-3, 
+                                  1.0, 1.0, 1.0, 
+                                  1e-3, 1e-3, 1e-3, 
+                                  1.0, 1.0, 1.0]
+
+# NavSat Transform
+# Converts GPS (Lat/Lon) to Cartesian Odometry (x, y).
+navsat_transform:
+  ros__parameters:
+    frequency: 1.0
+    delay: 3.0                    # Wait time before starting conversion
+    magnetic_declination_radians: 0.0 # Difference between magnetic and true north
+    yaw_offset: 0.0               # Offset to align IMU 0 with map north
+    zero_altitude: true          # Force Z to 0
+    use_utm: false                # False = Local ENU origin (0,0), True = Standard UTM
+    broadcast_utm_transform: false # Publish UTM TF
+    publish_filtered_gps: true     # Publish 'odometry/gps'
+    use_odometry_yaw: false       # False = Use IMU yaw (recommended), True = Use EKF yaw
+    
+    # wait_for_datum: If true, waits for explicit datum parameter below
+    wait_for_datum: true
+    # datum: Reference [Lat, Lon, Alt]. Should match Gazebo origin.
+    datum: [37.0, 127.0, 0.0]
+    
+    # transform_timeout: Extra wait time for TF availability to prevent errors
+    transform_timeout: 0.1

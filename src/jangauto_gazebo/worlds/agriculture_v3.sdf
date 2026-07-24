@@ -1,0 +1,179 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <world name="agriculture_v3">
+    <physics name="1ms" type="ode">
+      <max_step_size>0.002</max_step_size>
+      <real_time_factor>1</real_time_factor>
+
+      <ode>
+        <solver>
+          <type>world</type>  <!-- 안정성 우선 -->
+          <iters>100</iters>  <!-- 높은 반복 횟수 -->
+          <!-- <friction_model>cone_model</friction_model> -->
+        </solver>
+
+        <constraints>
+          <contact_surface_layer>0.001</contact_surface_layer>
+        </constraints>
+      </ode>
+
+    </physics>
+
+    <plugin
+      filename="gz-sim-physics-system"
+      name="gz::sim::systems::Physics">
+    </plugin>
+    <plugin
+      filename="gz-sim-user-commands-system"
+      name="gz::sim::systems::UserCommands">
+    </plugin>
+    <plugin
+      filename="gz-sim-scene-broadcaster-system"
+      name="gz::sim::systems::SceneBroadcaster">
+    </plugin>
+    <plugin
+      filename="BasicSystem"
+      name="jangauto_gazebo::BasicSystem">
+    </plugin>
+    <plugin
+      filename="FullSystem"
+      name="jangauto_gazebo::FullSystem">
+    </plugin>
+
+    <spherical_coordinates>
+    <surface_model>EARTH_WGS84</surface_model>
+    <world_frame_orientation>ENU</world_frame_orientation>
+    <latitude_deg>37.0</latitude_deg>
+    <longitude_deg>127.0</longitude_deg>
+    <elevation>0</elevation>
+    <heading_deg>0</heading_deg>
+    </spherical_coordinates>
+
+    <!--light-->
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 40 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+        <!-- 농업용 불규칙 지형 추가 -->
+    <model name="agricultural_terrain">
+      <static>true</static>
+      <link name="terrain_link">
+        <collision name="terrain_collision">
+          <geometry>
+            <heightmap>
+              <uri>file://media/geometry/agricultural_terrain_v20.png</uri>
+              <size>20 20 0.2</size>
+              <pos>0 0 0</pos>
+            </heightmap>
+          </geometry>
+          <surface>
+            <contact>
+              <ode>
+                <soft_cfm>0.003226</soft_cfm>
+                <soft_erp>0.0323</soft_erp>
+                <kp>10000</kp>
+                <kd>300</kd>
+              </ode>
+            </contact>
+
+          </surface>
+        </collision>
+        
+        <visual name="terrain_visual">
+          <geometry>
+            <heightmap>
+              <use_terrain_paging>false</use_terrain_paging>
+              <texture>
+                <diffuse>file://media/materials/textures/soil_img.png</diffuse>
+                <normal>file://media/materials/textures/flat_normal.png</normal>
+                <size>10</size>
+              </texture>
+              <uri>file://media/geometry/agricultural_terrain_v20.png</uri>
+              <size>20 20 0.2</size>
+              <pos>0 0 0</pos>
+            </heightmap>
+          </geometry>
+        </visual> 
+      </link>
+    </model>
+
+    <model name="tracked_v3">
+      <self_collide>true</self_collide>
+        <pose>-9 9 0.2 0 0 0</pose>
+        <!-- <pose>0 0 0 0 0 0</pose> -->
+        <!-- <pose>-10 0.75 0.3 0 0 0</pose> -->
+      <include merge="true">
+        <uri>package://jangauto_description/models/tracked_v3</uri>
+      </include>
+
+      <plugin
+        filename="gz-sim-joint-state-publisher-system"
+        name="gz::sim::systems::JointStatePublisher">
+      </plugin>
+
+      <plugin
+        filename="gz-sim-pose-publisher-system"
+        name="gz::sim::systems::PosePublisher">
+        <publish_model_pose>true</publish_model_pose>
+        <publish_link_pose>true</publish_link_pose>
+        <publish_sensor_pose>true</publish_sensor_pose>
+        <use_pose_vector_msg>true</use_pose_vector_msg>
+        <update_frequency>1</update_frequency>
+        <static_publisher>false</static_publisher>
+        <static_update_frequency>1</static_update_frequency>
+      </plugin>
+
+      <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
+        <left_joint>wheel_L1_joint</left_joint>
+        <right_joint>wheel_R1_joint</right_joint>
+        <left_joint>wheel_L2_joint</left_joint>
+        <right_joint>wheel_R2_joint</right_joint>
+        <left_joint>wheel_L3_joint</left_joint>
+        <right_joint>wheel_R3_joint</right_joint>
+        <left_joint>wheel_L4_joint</left_joint>
+        <right_joint>wheel_R4_joint</right_joint>
+        <left_joint>wheel_L5_joint</left_joint>
+        <right_joint>wheel_R5_joint</right_joint>
+        
+        <wheel_separation>1.5</wheel_separation>
+        <wheel_radius>0.10</wheel_radius>
+
+        <topic>/model/tracked_v3/cmd_vel_out</topic>
+
+        <max_linear_acceleration>1</max_linear_acceleration>
+        <min_linear_acceleration>-1</min_linear_acceleration>
+        <max_angular_acceleration>2</max_angular_acceleration>
+        <min_angular_acceleration>-2</min_angular_acceleration>
+        <max_linear_velocity>5</max_linear_velocity>
+        <min_linear_velocity>-5</min_linear_velocity>
+        <max_angular_velocity>50</max_angular_velocity>
+        <min_angular_velocity>-50</min_angular_velocity>
+        <min_wheel_torque>-40</min_wheel_torque>
+        <max_wheel_torque>40</max_wheel_torque>
+
+      </plugin>
+
+      <plugin filename="gz-sim-imu-system"
+              name="gz::sim::systems::Imu">
+      </plugin>
+
+      <plugin filename="gz-sim-navsat-system"
+        name="gz::sim::systems::NavSat" />
+
+      <plugin filename="gz-sim-magnetometer-system"
+        name="gz::sim::systems::Magnetometer"/>
+
+    </model>
+
+  </world>
+</sdf>

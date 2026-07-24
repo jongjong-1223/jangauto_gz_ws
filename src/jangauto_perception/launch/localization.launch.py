@@ -1,0 +1,58 @@
+import os
+
+from ament_index_python.packages import get_package_share_directory
+
+from launch import LaunchDescription
+from launch_ros.actions import Node
+
+
+def generate_launch_description():
+    pkg_project_perception = get_package_share_directory('jangauto_perception')
+
+    # 6-1. 로컬 EKF (IMU -> odom): IMU 데이터만 사용하여 부드럽지만 드리프트가 있는 지역(local) 주행 거리계를 생성합니다.
+    ekf_local_node = Node(
+        package="robot_localization",
+        executable="ekf_node",
+        name="ekf_local",
+        output="screen",
+        parameters=[os.path.join(pkg_project_perception, "config", "ekf.yaml"),
+                    {'use_sim_time': True}
+                    ],
+        remappings=[('odometry/filtered', 'odom')]  # nav2 odom_topic(/odom)에 맞춤
+    )
+
+    # 6-2. 글로벌 EKF (GPS+IMU -> map): GPS와 IMU 데이터를 융합하여 드리프트가 없는 전역(global) 위치를 추정합니다.
+    ekf_global_node = Node(
+        package="robot_localization",
+        executable="ekf_node",
+        name="ekf_global",
+        output="screen",
+        parameters=[os.path.join(pkg_project_perception, "config", "ekf.yaml"),
+                    {'use_sim_time': True}
+                    ],
+        remappings=[('odometry/filtered', 'odometry/global')]  # 출력 토픽 이름을 변경
+    )
+
+    # 6-3. NavSat Transform: GPS의 위도/경도 데이터를 EKF가 사용할 수 있는 UTM 또는 지역 좌표계(x,y)로 변환합니다.
+    navsat_transform_node = Node(
+        package="robot_localization",
+        executable="navsat_transform_node",
+        name="navsat_transform",
+        output="screen",
+        parameters=[os.path.join(pkg_project_perception, "config", "ekf.yaml"),
+                    {'use_sim_time': True}
+                    ],
+        remappings=[
+            ("imu", "/imu"),
+            ("gps/fix", "/navsat_fixed"),
+            ("odometry/filtered", "/odometry/global"),
+            ("gps/filtered", "/gps/filtered"),
+            ("odometry/gps", "/odometry/gps"),
+        ]
+    )
+
+    return LaunchDescription([
+        ekf_local_node,
+        ekf_global_node,
+        navsat_transform_node,
+    ])
