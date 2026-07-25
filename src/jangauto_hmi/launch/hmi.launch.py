@@ -1,3 +1,10 @@
+"""`app_websocket_bridge` 노드 하나를 실행하는 launch 파일.
+
+- 아래 6개 launch argument는 전부 `app_websocket_bridge.py`의 ROS 파라미터로
+  그대로 전달된다(호스트/포트, 하트비트 주기, mDNS 광고 여부/이름).
+- 기본값은 `app_websocket_bridge.py` 자체의 `declare_parameter` 기본값과
+  같아야 한다 — 여기서 바꾸면 실제 동작도 그 값으로 바뀐다.
+"""
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration

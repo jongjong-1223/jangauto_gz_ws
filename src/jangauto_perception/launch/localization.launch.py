@@ -1,3 +1,13 @@
+"""GPS+IMU 센서 퓨전 로컬라이제이션 launch 파일.
+
+3단계 파이프라인을 구성한다:
+- 로컬 EKF: IMU만 융합해 부드럽지만 드리프트가 있는 `odom` 프레임 추정.
+- NavSat Transform: GPS 위경도를 EKF가 쓸 수 있는 좌표계로 변환.
+- 글로벌 EKF: GPS+IMU를 융합해 드리프트 없는 `map` 프레임 추정.
+
+세 노드 모두 같은 `ekf.yaml` 설정 파일을 공유하되, remapping으로 입출력
+토픽만 다르게 잡아 로컬/글로벌 두 EKF 인스턴스를 구분한다.
+"""
 import os
 
 from ament_index_python.packages import get_package_share_directory

@@ -1,3 +1,12 @@
+"""애플리케이션 계층 노드 launch 파일.
+
+- `pure_pursuit_node`: 경로 추종(pure pursuit) 제어기.
+- `slip_plot_node`: 바퀴 슬립 대 시뮬레이션 시간 플로팅 노드.
+- `twist_mux_node`: 여러 `cmd_vel` 소스의 우선순위를 중재하는 `twist_mux`.
+
+현재 세 노드 모두 `LaunchDescription`에 등록되지 않고 주석 처리되어 있다 —
+즉 이 launch 파일을 include해도 실제로는 아무 노드도 뜨지 않는다.
+"""
 import os
 
 from ament_index_python.packages import get_package_share_directory

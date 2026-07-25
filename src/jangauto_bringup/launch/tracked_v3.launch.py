@@ -11,6 +11,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""tracked_v3 로봇 전체 스택을 띄우는 최상위 bringup launch 파일.
+
+각 하위 패키지의 launch 파일을 include해서 한 번에 실행한다:
+- `gazebo`/`description`: 시뮬레이션 월드 + 로봇 모델(URDF).
+- `localization`: GPS+IMU 로컬라이제이션(EKF 2단 + navsat transform).
+- `gps`: 시뮬레이션 GPS의 `position_covariance`를 채워 재발행.
+- `application`: 애플리케이션 계층 노드(현재 전부 비활성화, 위 패키지 참고).
+- `navigation2`: Nav2 스택 — **현재 아래 `LaunchDescription`에서 주석 처리되어
+  실제로는 안 뜬다**(정적 map 파일이 없어 AMCL 대신 slam_toolbox를 쓰도록
+  `slam: True`로 설정은 해뒀지만, include 자체가 비활성화된 상태).
+- `hmi`: 앱 웹소켓 브릿지.
+- `mission`: YASMIN 미션 상태머신.
+- `diagnostics`: `diagnostic_aggregator`.
+"""
 import os
 
 from ament_index_python.packages import get_package_share_directory
