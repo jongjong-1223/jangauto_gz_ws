@@ -28,6 +28,7 @@ def generate_launch_description():
     pkg_project_application = get_package_share_directory('jangauto_application')
     pkg_project_navigation2 = get_package_share_directory('jangauto_navigation2')
     pkg_project_hmi = get_package_share_directory('jangauto_hmi')
+    pkg_project_mission = get_package_share_directory('jangauto_mission')
 
     # Visualize in RViz
     # rviz = Node(
@@ -78,6 +79,16 @@ def generate_launch_description():
             os.path.join(pkg_project_hmi, 'launch', 'hmi.launch.py')),
     )
 
+    mission = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(pkg_project_mission, 'launch', 'mission.launch.py')),
+    )
+
+    diagnostics = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(get_package_share_directory('jangauto_bringup'), 'launch', 'diagnostics.launch.py')),
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument('rviz', default_value='true',
                               description='Open RViz.'),
@@ -88,5 +99,7 @@ def generate_launch_description():
         application,
         # navigation2,
         hmi,
+        mission,
+        diagnostics,
         # rviz,
     ])

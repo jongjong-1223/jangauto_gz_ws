@@ -20,6 +20,8 @@
   <depend>jangauto_perception</depend>
   <depend>jangauto_navigation2</depend>
   <depend>jangauto_hmi</depend>
+  <depend>jangauto_mission</depend>
+  <depend>diagnostic_aggregator</depend>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 

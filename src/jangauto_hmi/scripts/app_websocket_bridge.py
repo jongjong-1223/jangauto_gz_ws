@@ -22,6 +22,9 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String, Bool
 
+import diagnostic_updater
+from diagnostic_msgs.msg import DiagnosticStatus
+
 import websockets
 from websockets.exceptions import ConnectionClosed
 
@@ -92,6 +95,10 @@ class AppWebSocketBridge(Node):
         self._ws_server_thread.start()
 
         self.create_timer(self.heartbeat_period_sec, self._heartbeat_check)
+
+        self._diag_updater = diagnostic_updater.Updater(self)
+        self._diag_updater.setHardwareID('app_websocket_bridge')
+        self._diag_updater.add('WebSocket link', self._diagnostics_callback)
 
         self.get_logger().info(
             f'[AppWsBridge] Starting WebSocket server on {self.host}:{self.port} '
@@ -206,6 +213,17 @@ class AppWebSocketBridge(Node):
             return
         if changed:
             self.get_logger().info(f'[AppWsBridge] link_alive -> {alive}')
+
+    # -------------------------------------------------------------- diagnostics
+    def _diagnostics_callback(self, stat):
+        if self._ws_server is None:
+            stat.summary(DiagnosticStatus.ERROR, 'WebSocket server is not listening')
+        elif not self._ws_last_link_alive:
+            stat.summary(DiagnosticStatus.WARN, 'No app currently connected')
+        else:
+            stat.summary(DiagnosticStatus.OK, 'App connected')
+        stat.add('mdns_registered', str(self._mdns_service_info is not None))
+        return stat
 
     # ---------------------------------------------------------------- cleanup
     def destroy_node(self):

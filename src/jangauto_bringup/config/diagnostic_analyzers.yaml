@@ -1,0 +1,20 @@
+# diagnostic_aggregator 설정.
+# 지금은 우리 커스텀 노드 2개(app_websocket_bridge, gps_covariance_filler)만
+# diagnostic_updater를 붙였으므로 그룹도 그 둘만 정의한다. 노드가 늘어나면
+# 그룹만 추가하면 됨.
+#
+# contains/path 매칭 문자열은 diagnostic_updater가 내보내는
+# DiagnosticStatus.name 포맷("<node_name>: <task_name>")에 기반한 부분
+# 문자열 매칭이다 - 빌드 후 `ros2 topic echo /diagnostics`로 실측하고
+# 필요하면 보정할 것.
+/**:
+  ros__parameters:
+    analyzers:
+      hmi:
+        type: diagnostic_aggregator/GenericAnalyzer
+        path: HMI
+        contains: ['app_websocket_bridge']
+      gps:
+        type: diagnostic_aggregator/GenericAnalyzer
+        path: GPS
+        contains: ['gps_covariance_filler']
