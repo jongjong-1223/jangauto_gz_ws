@@ -14,6 +14,10 @@
 
 """map_server + amcl로 (SLAM 없이) 기존 지도 위에서 위치추정을 담당하는 launch 파일.
 
+**참고용 — 미사용.** 이 프로젝트는 AMCL 대신 GPS+IMU EKF(jangauto_perception)로
+map->odom->base_link TF를 직접 발행한다(`nav2_params.yaml` 헤더 주석 참고). 이 파일은
+stock nav2_bringup 구조 문서화 및 향후 참고용으로만 `launch/references/`에 보관한다.
+
 ## 역할
 - `map_server`: `map` 인자가 빈 문자열이면 파라미터 파일에 설정된 기본 지도를,
   값이 있으면 그 경로의 지도 yaml을 강제로 덮어써서 로드한다

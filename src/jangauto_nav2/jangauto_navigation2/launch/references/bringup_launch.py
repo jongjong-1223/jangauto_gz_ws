@@ -14,6 +14,12 @@
 
 """Nav2 스택 전체를 한 번에 띄우는 최상위 bringup launch 파일.
 
+**참고용 — 이 프로젝트의 실제 bringup(`jangauto_bringup/launch/tracked_v3.launch.py`)은
+이 파일을 쓰지 않는다.** 로컬라이제이션이 GPS+IMU EKF로 대체되어 AMCL/SLAM이 필요
+없어졌고(`nav2_params.yaml` 헤더 주석 참고), 실제로는 `navigation_launch.py`만 직접
+include한다. 이 파일과 그것이 참조하는 `localization_launch.py`/`slam_launch.py`는
+stock nav2_bringup 구조 문서화 및 향후 참고용으로만 `launch/references/`에 보관한다.
+
 ## 역할
 - `use_composition`이 참이면 `nav2_container`(component_container_isolated)를
   하나 띄우고, 지도/위치추정/내비게이션 서버들을 그 안에 컴포저블 노드로 로드한다
@@ -58,9 +64,11 @@ from nav2_common.launch import ReplaceString, RewrittenYaml
 
 def generate_launch_description():
     # 이 패키지의 launch 디렉터리 — 하위 slam/localization/navigation launch 파일을
-    # include할 때 경로 조합에 쓴다.
+    # include할 때 경로 조합에 쓴다. slam/localization은 미사용 참고용이라
+    # launch/references/에, navigation은 실제로 쓰이는 launch/에 그대로 있다.
     bringup_dir = get_package_share_directory('jangauto_navigation2')
     launch_dir = os.path.join(bringup_dir, 'launch')
+    references_dir = os.path.join(launch_dir, 'references')
 
     # 아래 DeclareLaunchArgument들이 실제로 값을 선언하며, 여기서는 그 값을
     # 나중에 참조하기 위한 핸들만 만든다(선언 자체는 함수 하단에 모아 있음).
@@ -211,7 +219,7 @@ def generate_launch_description():
             # 만들며 동시에 위치추정도 겸한다(localization_launch와 배타적).
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
-                    os.path.join(launch_dir, 'slam_launch.py')
+                    os.path.join(references_dir, 'slam_launch.py')
                 ),
                 condition=IfCondition(PythonExpression([slam, ' and ', use_localization])),
                 launch_arguments={
@@ -226,7 +234,7 @@ def generate_launch_description():
             # 위에서 map_server + amcl로 위치추정한다(slam_launch와 배타적).
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
-                    os.path.join(launch_dir, 'localization_launch.py')
+                    os.path.join(references_dir, 'localization_launch.py')
                 ),
                 condition=IfCondition(PythonExpression(['not ', slam, ' and ', use_localization])),
                 launch_arguments={

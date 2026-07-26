@@ -14,6 +14,11 @@
 
 """SLAM(slam_toolbox)으로 실시간 지도를 생성하며 동시에 지도 저장 서비스를 띄우는 launch 파일.
 
+**참고용 — 미사용.** 이 프로젝트는 SLAM 대신 GPS+IMU EKF(jangauto_perception)로
+map->odom->base_link TF를 직접 발행하고, 정적 맵도 jangauto_uwb_driver가 발행하는
+가상 맵으로 대신한다(`nav2_params.yaml` 헤더 주석 참고). 이 파일은 stock nav2_bringup
+구조 문서화 및 향후 참고용으로만 `launch/references/`에 보관한다.
+
 ## 역할
 - `start_map_server`: 지도를 파일로 저장할 수 있는 `map_saver_server`와, 이를
   관리하는 `lifecycle_manager_slam`을 실행한다(지도 자체를 만드는 건 아래

@@ -21,6 +21,9 @@
   <exec_depend>nav2_bt_navigator</exec_depend>
   <exec_depend>nav2_behavior_tree</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
+  <!-- planner_server가 런타임에 pluginlib로 로드하는 커스텀 전역 플래너
+       (PLAN.md Part 2 — nav2_core::GlobalPlanner 구현, apt 패키지 아님). -->
+  <exec_depend>nav2_straightline_planner</exec_depend>
 
   <test_depend>ament_lint_common</test_depend>
   <test_depend>ament_lint_auto</test_depend>
