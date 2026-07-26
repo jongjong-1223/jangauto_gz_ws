@@ -163,9 +163,32 @@
       <sensor name="magnetometer_sensor" type="magnetometer">
         <always_on>true</always_on>
         <update_rate>25.0</update_rate>
-        <topic>magnetometer</topic> 
+        <topic>magnetometer</topic>
           <pose>0.1 0 0 0 0 0</pose>
 
+      </sensor>
+
+      <!-- 전방 뎁스카메라: nav2 코스트맵/collision_monitor의 장애물 인식(안전정지)용 소스.
+           차체 전면(x=0.55, 차체 길이 1.1m의 절반) 상단에 진행방향을 향해 장착.
+           gz-sim이 <topic> 하위로 image/depth_image/points/camera_info를 자동 발행한다. -->
+      <sensor name="front_depth_camera" type="rgbd_camera">
+        <always_on>true</always_on>
+        <update_rate>15</update_rate>
+        <visualize>true</visualize>
+        <topic>front_depth_camera</topic>
+        <pose>0.55 0 0.1 0 0 0</pose>
+        <camera>
+          <horizontal_fov>1.047</horizontal_fov>
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.1</near>
+            <far>10.0</far>
+          </clip>
+        </camera>
       </sensor>
 
     </link>

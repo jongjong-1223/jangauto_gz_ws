@@ -31,6 +31,14 @@
       filename="gz-sim-scene-broadcaster-system"
       name="gz::sim::systems::SceneBroadcaster">
     </plugin>
+    <!-- rgbd_camera(front_depth_camera) 등 렌더링 기반 센서를 실제로 구동하는 데
+         필요 — 이게 없으면 <sensor type="rgbd_camera">가 SDF에 있어도, gz 토픽
+         이름만 예약될 뿐 실제 image/depth_image/points가 발행되지 않는다(확인됨). -->
+    <plugin
+      filename="gz-sim-sensors-system"
+      name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
     <plugin
       filename="BasicSystem"
       name="jangauto_gazebo::BasicSystem">

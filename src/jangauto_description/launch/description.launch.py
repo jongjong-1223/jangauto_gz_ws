@@ -47,6 +47,17 @@ def generate_launch_description():
         arguments=["0.1", "0", "0", "0", "0", "0", "base_link", "tracked_v3/base_link/navsat_sensor"],
         output="screen",
     )
+    # 뎁스카메라(front_depth_camera)의 PointCloud2 등이 이 프레임 이름으로
+    # 오는데(gz-sim 센서 프레임 명명 규칙), imu/gps와 마찬가지로 이 TF가
+    # 없으면 nav2 코스트맵의 메시지 필터가 계속 드롭한다(실행 확인됨).
+    static_depth_camera_tf = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="tf_depth_camera_to_base",
+        arguments=["0.55", "0", "0.1", "0", "0", "0", "base_link",
+                   "tracked_v3/base_link/front_depth_camera"],
+        output="screen",
+    )
 
     # base_link(차체 중심, 지면 0.35m 위) -> base_footprint(지면 투영, Z=0) — nav2 amcl/collision_monitor용
     static_base_footprint_tf = Node(
@@ -62,5 +73,6 @@ def generate_launch_description():
         static_base_prefix_tf,
         static_imu_tf,
         static_gps_tf,
+        static_depth_camera_tf,
         static_base_footprint_tf,
     ])
