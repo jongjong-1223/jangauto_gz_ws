@@ -14,15 +14,18 @@
 """tracked_v3 로봇 전체 스택을 띄우는 최상위 bringup launch 파일.
 
 각 하위 패키지의 launch 파일을 include해서 한 번에 실행한다:
-- `gazebo`/`description`: 시뮬레이션 월드 + 로봇 모델(URDF).
-- `localization`: GPS+IMU 로컬라이제이션(EKF 2단 + navsat transform).
+- `gazebo`/`description`: 시뮬레이션 월드 + 로봇 모델(URDF, 전방 뎁스카메라 포함).
+- `localization`: GPS+IMU 로컬라이제이션(EKF 2단 + navsat transform) —
+  `map`→`odom`→`base_link` TF를 직접 발행하므로 Nav2 쪽 AMCL/SLAM은 쓰지 않는다.
 - `gps`: 시뮬레이션 GPS의 `position_covariance`를 채워 재발행.
+- `uwb`: 실제 UWB 하드웨어 전까지 nav2 정적 맵(`/map`)을 가상 데이터로 채우는
+  임시 노드(`jangauto_uwb_driver`).
 - `application`: 애플리케이션 계층 노드(현재 전부 비활성화, 위 패키지 참고).
-- `navigation2`: Nav2 스택 — **현재 아래 `LaunchDescription`에서 주석 처리되어
-  실제로는 안 뜬다**(정적 map 파일이 없어 AMCL 대신 slam_toolbox를 쓰도록
-  `slam: True`로 설정은 해뒀지만, include 자체가 비활성화된 상태).
+- `navigation2`: Nav2 내비게이션 서버 묶음(`navigation_launch.py`) —
+  AMCL/SLAM 분기가 있는 `bringup_launch.py` 대신, GPS EKF 로컬라이제이션과
+  충돌하지 않도록 서버들만 포함한 이 launch 파일을 직접 include한다.
 - `hmi`: 앱 웹소켓 브릿지.
-- `mission`: YASMIN 미션 상태머신.
+- `mission`: YASMIN 미션 상태머신 + `cmd_vel_arbiter` + CAL/ALIGN 액션 서버.
 - `diagnostics`: `diagnostic_aggregator`.
 """
 import os
@@ -39,6 +42,7 @@ def generate_launch_description():
     pkg_project_description = get_package_share_directory('jangauto_description')
     pkg_project_perception = get_package_share_directory('jangauto_perception')
     pkg_project_gps_driver = get_package_share_directory('jangauto_gps_driver')
+    pkg_project_uwb_driver = get_package_share_directory('jangauto_uwb_driver')
     pkg_project_application = get_package_share_directory('jangauto_application')
     pkg_project_navigation2 = get_package_share_directory('jangauto_navigation2')
     pkg_project_hmi = get_package_share_directory('jangauto_hmi')
@@ -72,17 +76,23 @@ def generate_launch_description():
             os.path.join(pkg_project_gps_driver, 'launch', 'gps.launch.py')),
     )
 
+    uwb = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(pkg_project_uwb_driver, 'launch', 'uwb.launch.py')),
+    )
+
     application = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(pkg_project_application, 'launch', 'application.launch.py')),
     )
 
-    # 워크스페이스에 사전 제작된 정적 map 파일이 없으므로 AMCL 대신 slam_toolbox를 사용
+    # AMCL/SLAM 분기가 있는 bringup_launch.py 대신 navigation_launch.py만 include —
+    # 로컬라이제이션은 GPS+IMU EKF(localization)가 이미 담당하므로 nav2 쪽
+    # AMCL/SLAM을 같이 띄우면 map->odom TF가 두 시스템에서 충돌한다.
     navigation2 = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(pkg_project_navigation2, 'launch', 'bringup_launch.py')),
+            os.path.join(pkg_project_navigation2, 'launch', 'navigation_launch.py')),
         launch_arguments={
-            'slam': 'True',
             'use_sim_time': 'true',
             'autostart': 'true',
         }.items(),
@@ -110,8 +120,9 @@ def generate_launch_description():
         description,
         localization,
         gps,
+        uwb,
         application,
-        # navigation2,
+        navigation2,
         hmi,
         mission,
         diagnostics,

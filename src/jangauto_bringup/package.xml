@@ -17,6 +17,7 @@
   <depend>jangauto_description</depend>
   <depend>jangauto_gazebo</depend>
   <depend>jangauto_gps_driver</depend>
+  <depend>jangauto_uwb_driver</depend>
   <depend>jangauto_perception</depend>
   <depend>jangauto_navigation2</depend>
   <depend>jangauto_hmi</depend>

@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>jangauto_uwb_driver</name>
+  <version>0.0.0</version>
+  <description>가상 UWB 데이터를 nav2가 쓸 수 있는 OccupancyGrid 맵으로 변환해 발행 (실제 UWB 하드웨어 도입 전 임시 노드)</description>
+  <maintainer email="jangjw147147@gmail.com">jungwoo</maintainer>
+  <license>Apache 2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
