@@ -43,6 +43,9 @@ set(srv_files
 
 set(action_files
   "action/Patrol.action"
+  "action/Calibrate.action"
+  "action/Align.action"
+  "action/Run.action"
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}

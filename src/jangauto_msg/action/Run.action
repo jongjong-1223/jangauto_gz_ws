@@ -1,0 +1,12 @@
+# RUN 상태 진입 시 mission_state_machine.py가 호출하는 주행 액션.
+# 웨이포인트 주행 로직(목표를 어디서 받는지 등)은 아직 미정 —
+# 지금은 goal에 필드 없이 "주행 시작"만 의미한다.
+
+# goal (필드 없음 — 웨이포인트 표현 방식이 정해지면 추가)
+---
+# result
+bool success
+string message
+---
+# feedback
+string status

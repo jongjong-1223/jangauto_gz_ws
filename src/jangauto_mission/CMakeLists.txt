@@ -5,6 +5,10 @@ find_package(ament_cmake REQUIRED)
 
 install(PROGRAMS
   scripts/mission_state_machine.py
+  scripts/cmd_vel_arbiter.py
+  scripts/calibration_action_server.py
+  scripts/align_action_server.py
+  scripts/run_action_server.py
   DESTINATION lib/${PROJECT_NAME}
   PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ
 )

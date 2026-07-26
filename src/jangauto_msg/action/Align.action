@@ -1,0 +1,12 @@
+# ALIGN 상태 진입 시 mission_state_machine.py가 호출하는 정렬 액션.
+# 헤딩만 맞추는지 특정 위치까지 이동하는지, 목표 자세를 어디서 얻는지는
+# 아직 미정 — 지금은 goal에 필드 없이 "정렬 시작"만 의미한다.
+
+# goal (필드 없음 — 목표 자세 표현 방식이 정해지면 추가)
+---
+# result
+bool success
+string message
+---
+# feedback
+string status
