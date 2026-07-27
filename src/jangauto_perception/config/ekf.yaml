@@ -35,17 +35,20 @@ ekf_local:
     # Defines uncertainty. Lower values = higher trust in that variable.
     
     # process_noise_covariance: Model uncertainty
-    process_noise_covariance: [0.01, 0.01, 0.01, 
-                               0.01, 0.01, 0.01, 
-                               0.01, 0.01, 0.01, 
-                               0.01, 0.01, 0.01, 
-                               0.01, 0.01, 0.01]
+    # 실험: 속도(vX,vY,vZ)/가속도(aX,aY,aZ) 항목을 0.01 -> 훨씬 낮게 낮춰서
+    # "필터가 자기 예측 모델을 더 신뢰하고 노이즈 많은 IMU 가속도 측정에
+    # 덜 휘둘리게" 튜닝 (드리프트 개선 효과 실측 비교용, 베이스라인은 전부 0.01).
+    process_noise_covariance: [0.01,   0.01,   0.01,
+                               0.01,   0.01,   0.01,
+                               0.0001, 0.0001, 0.0001,
+                               0.01,   0.01,   0.01,
+                               0.001,  0.001,  0.001]
 
     # initial_estimate_covariance: Uncertainty of starting state
-    initial_estimate_covariance: [1.0, 1.0, 1.0, 
-                                  1e-3, 1e-3, 1e-3, 
-                                  1.0, 1.0, 1.0, 
-                                  1e-3, 1e-3, 1e-3, 
+    initial_estimate_covariance: [1.0, 1.0, 1.0,
+                                  1e-3, 1e-3, 1e-3,
+                                  1.0, 1.0, 1.0,
+                                  1e-3, 1e-3, 1e-3,
                                   1.0, 1.0, 1.0]
 
 ekf_global:
