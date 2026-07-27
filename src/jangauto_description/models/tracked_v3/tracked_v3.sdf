@@ -6,7 +6,7 @@
     <pose>0 0 0 0 0 0</pose>
 
     <link name="base_link">
-      <!-- 차체 중심: 지면에서 0.35m 높이에 배치 (바퀴 반지름 0.1m + 0.15m 여유) -->
+      <!-- 차체 중심: 지면에서 0.35m 높이에 배치 (바퀴 반지름 0.1m + 0.25m 여유) -->
       <pose>0 0 0.35 0 0 0</pose>
 
       <inertial>
@@ -40,7 +40,7 @@
           <update_rate>25</update_rate>
           <visualize>false</visualize>
           <topic>imu</topic>
-          <pose>0.1 0 0 0 0 0</pose>
+          <pose>0 0 0.25 0 0 0</pose>
           <imu>
             <orientation_reference_frame>
               <localization>ENU</localization>
@@ -157,14 +157,14 @@
         <update_rate>1.0</update_rate> <!-- 주파수 현실에 맞게 수정 -->
         <topic>navsat</topic>
         <visualize>false</visualize>
-          <pose>0.1 0 0 0 0 0</pose>
+          <pose>0 0 0.25 0 0 0</pose>
       </sensor>
 
       <sensor name="magnetometer_sensor" type="magnetometer">
         <always_on>true</always_on>
         <update_rate>25.0</update_rate>
         <topic>magnetometer</topic>
-          <pose>0.1 0 0 0 0 0</pose>
+          <pose>0 0 0.25 0 0 0</pose>
 
       </sensor>
 
@@ -176,7 +176,7 @@
         <update_rate>15</update_rate>
         <visualize>true</visualize>
         <topic>front_depth_camera</topic>
-        <pose>0.55 0 0.1 0 0 0</pose>
+        <pose>0.55 0 0.25 0 0 0</pose>
         <camera>
           <horizontal_fov>1.047</horizontal_fov>
           <image>
