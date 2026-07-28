@@ -10,10 +10,17 @@
   맞는 소스만 통과시킨다 — RUN이 아니면 nav2 명령을 걸러내는 식.
 - `cmd_vel_stop`은 모드와 무관하게 항상 최우선 — 안전정지 신호가 들어오면
   그 즉시 정지 명령으로 덮어쓴다.
+- KEY 모드는 소스가 2개(수동조작 `cmd_vel_manual` + `app_websocket_bridge.py`가
+  MoveRequest로 보낸 Nav2 goal의 출력 `cmd_vel_nav_out`)일 수 있다 — 조이스틱을
+  조작 중이면(=`cmd_vel_manual`이 최근) 항상 그게 이긴다(사람의 직접 개입이
+  자율 이동보다 우선). `key_manual_driver.py`가 조이스틱을 안 건드릴 때는
+  `cmd_vel_manual`을 아예 발행하지 않으므로, 그때는 자연히 `cmd_vel_nav_out`이
+  통과한다.
 
 ## 입력/출력
-- 구독: `cmd_vel_nav_out`(nav2 최종 출력), `cmd_vel_manual`(앱 수동조작 변환값,
-  아직 이 토픽을 발행하는 노드는 없음 — 존재한다고 가정만 함), `cmd_vel_stop`
+- 구독: `cmd_vel_nav_out`(nav2 최종 출력 — RUN의 자율주행뿐 아니라 KEY/CAL에서
+  MoveRequest로 실행 중인 목표 지점 이동도 여기로 나온다), `cmd_vel_manual`
+  (조이스틱 변환값, KEY 모드에서 조작 중일 때만 옴), `cmd_vel_stop`
   (안전정지 트리거, 내용은 안 보고 수신 자체만 봄), `/robot_status`(현재 모드).
 - 발행: `cmd_vel_out` — `jangauto_bridge.yaml`이 이미 보고 있는 이름이라
   시뮬레이션 로봇까지 배선 그대로 이어진다.
@@ -35,11 +42,12 @@ from geometry_msgs.msg import Twist
 
 from jangauto_msg.msg import Status
 
-# 주행이 허용되는 모드 -> 그 모드에서 통과시킬 입력 토픽 이름.
-# 나머지 모드(STOP/CAL/ALIGN)는 목록에 없으므로 항상 정지.
-MODE_TO_SOURCE_TOPIC = {
-    "RUN": "cmd_vel_nav_out",
-    "KEY": "cmd_vel_manual",
+# 주행이 허용되는 모드 -> 그 모드에서 통과시킬 입력 토픽들(우선순위 순서 —
+# 리스트 앞쪽일수록 우선). 나머지 모드(STOP/ALIGN)는 목록에 없으므로 항상 정지.
+MODE_TO_SOURCE_TOPICS = {
+    "RUN": ["cmd_vel_nav_out"],
+    "KEY": ["cmd_vel_manual", "cmd_vel_nav_out"],
+    "CAL": ["cmd_vel_nav_out"],
 }
 
 # 이 시간(초) 안에 메시지가 안 들어오면 그 소스는 "죽은 것"으로 간주 —
@@ -103,25 +111,27 @@ class CmdVelArbiter(Node):
         """타이머 콜백 — 매 주기 규칙대로 출력을 하나 결정해 발행.
 
         1. cmd_vel_stop이 최근에 왔으면 모드 무관 무조건 정지.
-        2. 현재 모드에 맞는 소스가 있고 그게 최근에 왔으면 그대로 통과.
-        3. 그 외(허용 안 되는 모드거나, 맞는 소스가 죽었거나)는 정지.
+        2. 현재 모드에 허용된 소스 목록을 우선순위 순서대로 훑어, 최근에 온
+           첫 번째 소스를 통과시킨다(예: KEY에서 조이스틱 조작 중이면
+           cmd_vel_manual이 cmd_vel_nav_out보다 항상 먼저 선택됨).
+        3. 허용된 소스가 하나도 최근이 아니면(또는 이 모드에 소스가 아예
+           없으면) 정지.
         """
         if self._is_recent(self._last_stop_monotonic):
             self._pub.publish(Twist())
             return
 
-        source_topic = MODE_TO_SOURCE_TOPIC.get(self._current_mode)
-        if source_topic == 'cmd_vel_nav_out':
-            last_monotonic, msg = self._last_nav
-        elif source_topic == 'cmd_vel_manual':
-            last_monotonic, msg = self._last_manual
-        else:
-            last_monotonic, msg = (None, None)
+        source_by_topic = {
+            'cmd_vel_nav_out': self._last_nav,
+            'cmd_vel_manual': self._last_manual,
+        }
+        for source_topic in MODE_TO_SOURCE_TOPICS.get(self._current_mode, []):
+            last_monotonic, msg = source_by_topic[source_topic]
+            if self._is_recent(last_monotonic):
+                self._pub.publish(msg)
+                return
 
-        if source_topic is not None and self._is_recent(last_monotonic):
-            self._pub.publish(msg)
-        else:
-            self._pub.publish(Twist())
+        self._pub.publish(Twist())
 
 
 def main():

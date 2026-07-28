@@ -25,7 +25,8 @@
   AMCL/SLAM 분기가 있는 `bringup_launch.py` 대신, GPS EKF 로컬라이제이션과
   충돌하지 않도록 서버들만 포함한 이 launch 파일을 직접 include한다.
 - `hmi`: 앱 웹소켓 브릿지.
-- `mission`: YASMIN 미션 상태머신 + `cmd_vel_arbiter` + CAL/ALIGN 액션 서버.
+- `mission`: YASMIN 미션 상태머신 + CAL/ALIGN/RUN 액션 서버 + 진단→에러 연결.
+- `control`: `cmd_vel_arbiter` + 조이스틱 수동조종(`jangauto_control`).
 - `diagnostics`: `diagnostic_aggregator`.
 """
 import os
@@ -47,6 +48,7 @@ def generate_launch_description():
     pkg_project_navigation2 = get_package_share_directory('jangauto_navigation2')
     pkg_project_hmi = get_package_share_directory('jangauto_hmi')
     pkg_project_mission = get_package_share_directory('jangauto_mission')
+    pkg_project_control = get_package_share_directory('jangauto_control')
 
     # Visualize in RViz
     # rviz = Node(
@@ -108,6 +110,11 @@ def generate_launch_description():
             os.path.join(pkg_project_mission, 'launch', 'mission.launch.py')),
     )
 
+    control = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(pkg_project_control, 'launch', 'control.launch.py')),
+    )
+
     diagnostics = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(get_package_share_directory('jangauto_bringup'), 'launch', 'diagnostics.launch.py')),
@@ -125,6 +132,7 @@ def generate_launch_description():
         navigation2,
         hmi,
         mission,
+        control,
         diagnostics,
         # rviz,
     ])

@@ -2,18 +2,43 @@
 """앱 웹소켓 브릿지 노드.
 
 ## 역할
-- 모바일 앱과 단일 양방향 WebSocket(`ws://<host>:8887`)으로 연결해, 앱이
-  보낸 JSON을 그대로 ROS 토픽으로 재발행한다(`/app/control_state`,
-  `/app/command`).
-- `mission_state_machine.py`가 발행하는 앱 핸드셰이크 토픽
-  (`/app/robot_status`, `/app/control_state_ack`)을 구독해서 연결된 모든
-  웹소켓 클라이언트에 그대로 중계한다 — 내용을 해석하지 않는 "덤(dumb)
-  중계"만 담당하고, 수락/거부 판단이나 상태 전이 로직은 전혀 갖지 않는다
-  (전부 `mission_state_machine.py` 책임).
+- 모바일 앱과 단일 양방향 WebSocket(`ws://<host>:8887`)으로 연결한다.
+- **앱→로봇(인바운드)**: 앱이 보낸 JSON을 그대로 ROS 토픽으로 재발행한다
+  (`/app/control_state`, `/app/command`) — 내용을 해석하지 않는 덤 중계.
+- **로봇→앱(아웃바운드, 상태)**: `/robot_status`(jangauto_msg/Status),
+  `/odometry/global`(위치), `/odom`(속도) 세 ROS 토픽을 구독해서 앱이
+  기대하는 JSON을 이 노드가 직접 조립한 뒤 주기적으로(`app_status_publish_period_sec`)
+  WebSocket으로 브로드캐스트한다 — ROS 토픽으로 재발행하지 않고 바로 WS로만
+  나간다. 앱 JSON 스키마(필드 이름 등)에 대한 지식은 이 노드에만 있다.
+  명령별 개별 응답(ack)은 없음 — `/robot_status`의 `mode` 변화만으로 앱이
+  수락 여부를 판단한다(거부 사유 텍스트는 전달하지 않음).
+- **로봇→앱(아웃바운드, 지도)**: `/map`(nav_msgs/OccupancyGrid)을 구독해서
+  OpenCV로 점유 셀의 꼭짓점을 추출하고, 앱이 이미 파싱 가능한 `map_data`
+  메시지의 `anchors` 필드로 보낸다(실제 UWB 앵커가 아니라 지도 꼭짓점을
+  임시로 이 필드에 담은 것 — 나중에 필드명/구조를 바꿔야 함,
+  `APP_PROTOCOL_HANDSHAKE.md` §5 참고). 앱의 `MoveRequest` 등과 같은
+  msg_id+`AppAck` 신뢰성 프로토콜로 보내고, 응답 없으면 주기적으로
+  재전송한다(`map_data_retry_timeout_sec`/`map_data_max_retries`).
+- **앱→로봇(아웃바운드 아님, MoveRequest)**: `/app/command`에 `command=="move"`가
+  오면(다른 커맨드는 여전히 무시) 이 노드가 직접 판단한다 — CAL을 한 번이라도
+  완료했고(`/jangauto_mission/calibration_complete`) 현재 KEY/CAL 모드일 때만
+  수락, Nav2(`navigate_to_pose` 액션)에 목표 지점 goal을 보낸다. 거부 시
+  사유를, 수락/거부 결과를 `move_ack`로 WS에 바로 응답한다(ROS 재발행 없음,
+  판단·Nav2 연동·WS 응답까지 이 노드가 전담 — mission 쪽에 별도 노드 없음).
+  Nav2 액션 클라이언트의 블로킹 호출이 WS 스레드를 막지 않도록 전용
+  스레드풀(`ThreadPoolExecutor`)에서 처리한다. KEY 모드에서 조이스틱을
+  건드리면(`cmd_vel_manual` 수신) 진행 중이던 move goal은 즉시 취소된다
+  (사람의 직접 개입이 자율 이동보다 우선).
 - mDNS(`_robot._tcp.local.`)로 서비스를 광고해서 앱이 IP를 몰라도 자동
   탐색할 수 있게 한다.
 - 하트비트(`/app/link_alive`)로 앱 연결 생존 여부를 추적하고,
-  `diagnostic_updater`로 서버/연결 상태를 `/diagnostics`에 보고한다.
+  `diagnostic_updater`로 서버 상태·앱 연결·업스트림 토픽 수신 최근성·
+  map_data 전송 성공 여부를 `/diagnostics`에 보고한다.
+
+## `/app/*` 토픽 규칙
+인바운드 두 토픽(`/app/control_state`, `/app/command`)은 이 노드만 발행하고
+`mission_state_machine.py` 등 다른 노드는 구독만 한다. 아웃바운드
+(`robot_status`)는 ROS 토픽 자체가 없다 — 조립된 JSON은 WS로만 나간다.
 
 ## 스코프 밖
 JSON을 실제 로봇 명령(`cmd_vel`, poweroff, generate_path 등)으로 번역하는
@@ -23,15 +48,27 @@ HTTP 프로토콜용 참고 코드, 현재 미사용)가 하던 역할이지만 
 정수 비트필드)이 다르기 때문에 새로 만들었다.
 """
 import asyncio
+import concurrent.futures
 import json
+import math
 import socket
 import threading
 import time
+import uuid
+
+import cv2
+import numpy as np
 
 import rclpy
+from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String, Bool
+from nav_msgs.msg import Odometry, OccupancyGrid
+from geometry_msgs.msg import Twist
+
+from jangauto_msg.msg import Status
+from nav2_msgs.action import NavigateToPose
 
 import diagnostic_updater
 from diagnostic_msgs.msg import DiagnosticStatus
@@ -45,16 +82,78 @@ from zeroconf import Zeroconf, ServiceInfo
 # Config.TX_PERIOD_MS (500 ms by default on the app side).
 CONTROL_STATE_KEYS = {'sw_bits', 'key_bits', 'speed_bits', 'video_bit', 'safe_bit'}
 
-# Topics mission_state_machine.py publishes for the app handshake — this
-# bridge relays them to the app verbatim without interpreting their content
-# (accept/reject and sequencing logic all live in mission_state_machine.py).
-APP_ROBOT_STATUS_TOPIC = '/app/robot_status'
-APP_CONTROL_STATE_ACK_TOPIC = '/app/control_state_ack'
+# 앱용 JSON을 조립하려고 구독하는 ROS 내부 소스들 — mission_state_machine.py(상태
+# 판단), jangauto_perception(로컬라이제이션), jangauto_uwb_driver(지도)가 각자
+# 발행하는 타입드 토픽이다.
+ROBOT_STATUS_TOPIC = '/robot_status'          # mode/in_error/error_reason (jangauto_msg/Status)
+ODOMETRY_GLOBAL_TOPIC = '/odometry/global'    # GPS+IMU 전역 EKF(map 프레임) — 위치(tag_x/y/ori) 출처
+ODOMETRY_LOCAL_TOPIC = '/odom'                # IMU 로컬 EKF(odom 프레임) — 속도(tag_vel/yaw_rate) 출처
+MAP_TOPIC = '/map'                            # OccupancyGrid — map_data(anchors) 꼭짓점 추출 출처
+CALIBRATION_COMPLETE_TOPIC = '/jangauto_mission/calibration_complete'  # MoveRequest 수락 조건
+CMD_VEL_MANUAL_TOPIC = 'cmd_vel_manual'       # 조이스틱 출력 — 값이 오면 진행 중인 move goal 취소
+
+# MoveRequest가 수락되려면 이 모드들 중 하나여야 함(cmd_vel_arbiter.py의
+# MODE_TO_SOURCE_TOPICS에서 KEY/CAL 둘 다 cmd_vel_nav_out을 허용하는 것과 짝을 이룸).
+MOVE_ALLOWED_MODES = {'KEY', 'CAL'}
+NAV2_ACTION_NAME = 'navigate_to_pose'
+NAV2_WAIT_FOR_SERVER_TIMEOUT_SEC = 5.0
+
+# 진단 최근성 판정 임계값(초) — gps_covariance_filler.py와 동일한 관례
+# (time.monotonic() 기반, 없음=ERROR/오래됨=WARN/정상=OK).
+MAP_STALE_TIMEOUT_SEC = 3.0
+ROBOT_STATUS_STALE_TIMEOUT_SEC = 3.0
+ODOM_STALE_TIMEOUT_SEC = 3.0
 
 # Must match Config.SERVICE_TYPE ("_robot._tcp.") in the app's NsdHelper.kt,
 # with the ".local." domain that Android's NsdManager appends implicitly but
 # python-zeroconf requires spelled out.
 MDNS_SERVICE_TYPE = '_robot._tcp.local.'
+
+
+def _quaternion_to_yaw(q) -> float:
+    """geometry_msgs/Quaternion -> yaw(rad). 로봇 진행방향(tag_ori)을 앱에 보내려고
+    평면 회전각 하나만 뽑아낸다(롤/피치는 지상 주행 로봇이라 무시)."""
+    return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+
+
+def _extract_map_points(msg: OccupancyGrid, occupied_threshold: int) -> list:
+    """OccupancyGrid -> 점유 셀 꼭짓점 평평한 리스트([{'x':..,'y':..}, ...]).
+
+    - occupied_threshold 이상인 셀만 255로 이진화한 뒤, 1px 제로 패딩을 씌워서
+      cv2.findContours에 넘긴다 — 지도 경계처럼 이미지 가장자리에 붙는 도형이
+      패딩 없이는 잘려서 컨투어가 안 잡히는 OpenCV의 흔한 함정을 피하기 위함.
+    - RETR_EXTERNAL: 바깥 윤곽선만(내부 구멍은 이번 범위 밖). approxPolyDP로
+      각 컨투어의 꼭짓점 개수를 줄인다.
+    - origin이 무회전이라고 가정(현재 이 프로젝트의 모든 OccupancyGrid 발행자가
+      만족하는 조건)하고 셀 중심 좌표를 world 좌표(m)로 변환한다.
+    """
+    width = msg.info.width
+    height = msg.info.height
+    if width == 0 or height == 0:
+        return []
+
+    grid = np.array(msg.data, dtype=np.int16).reshape((height, width))
+    binary = np.where(grid >= occupied_threshold, 255, 0).astype(np.uint8)
+    padded = np.pad(binary, pad_width=1, mode='constant', constant_values=0)
+
+    contours, _ = cv2.findContours(padded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    resolution = msg.info.resolution
+    origin_x = msg.info.origin.position.x
+    origin_y = msg.info.origin.position.y
+
+    points = []
+    for contour in contours:
+        epsilon = 0.02 * cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+        for pt in approx.reshape(-1, 2):
+            col = int(pt[0]) - 1  # 패딩으로 밀린 만큼 되돌림
+            row = int(pt[1]) - 1
+            points.append({
+                'x': origin_x + (col + 0.5) * resolution,
+                'y': origin_y + (row + 0.5) * resolution,
+            })
+    return points
 
 
 def _detect_local_ip():
@@ -90,6 +189,11 @@ class AppWebSocketBridge(Node):
         self.declare_parameter('heartbeat_timeout_sec', 1.5)
         self.declare_parameter('mdns_enabled', True)
         self.declare_parameter('mdns_instance_name', 'jangauto')
+        self.declare_parameter('app_status_publish_period_sec', 0.2)
+        self.declare_parameter('map_data_retry_timeout_sec', 1.0)
+        self.declare_parameter('map_data_max_retries', 3)
+        self.declare_parameter('map_data_retry_check_period_sec', 0.2)
+        self.declare_parameter('map_occupied_threshold', 50)
 
         self.host = self.get_parameter('host').get_parameter_value().string_value
         self.port = self.get_parameter('port').get_parameter_value().integer_value
@@ -97,32 +201,75 @@ class AppWebSocketBridge(Node):
         self.heartbeat_timeout_sec = self.get_parameter('heartbeat_timeout_sec').get_parameter_value().double_value
         self.mdns_enabled = self.get_parameter('mdns_enabled').get_parameter_value().bool_value
         self.mdns_instance_name = self.get_parameter('mdns_instance_name').get_parameter_value().string_value
+        self.app_status_publish_period_sec = self.get_parameter(
+            'app_status_publish_period_sec').get_parameter_value().double_value
+        self.map_data_retry_timeout_sec = self.get_parameter(
+            'map_data_retry_timeout_sec').get_parameter_value().double_value
+        self.map_data_max_retries = self.get_parameter(
+            'map_data_max_retries').get_parameter_value().integer_value
+        self.map_data_retry_check_period_sec = self.get_parameter(
+            'map_data_retry_check_period_sec').get_parameter_value().double_value
+        self.map_occupied_threshold = self.get_parameter(
+            'map_occupied_threshold').get_parameter_value().integer_value
 
         # Publishers
         self.control_state_pub = self.create_publisher(String, '/app/control_state', 10)
         self.command_pub = self.create_publisher(String, '/app/command', 10)
         self.link_alive_pub = self.create_publisher(Bool, '/app/link_alive', 10)
 
-        # Subscriptions: mission_state_machine.py -> app handshake relay.
-        # Cache the latest robot_status so newly-connected clients get it
-        # immediately instead of waiting for the next state change (mirrors
-        # /robot_status's own TRANSIENT_LOCAL/latched behavior at the
-        # WebSocket layer, where ROS QoS latching doesn't reach).
-        self._last_robot_status_json = None
-        # mission_state_machine.py가 이 토픽을 RELIABLE+TRANSIENT_LOCAL(latched)로
-        # 발행한다 — 이쪽 구독도 durability를 맞춰야 late-join 시 마지막 값을 실제로
-        # 받는다(구독 쪽이 기본 VOLATILE이면 QoS는 호환되어 에러는 안 나지만, 늦게
-        # 구독해도 과거 값을 재생해주지 않고 그 다음 변화부터만 받게 됨 — 실행 확인됨).
-        app_status_qos = QoSProfile(
+        # 앱용 JSON 조립 재료 캐시 — 각 구독 콜백이 최신값만 갱신하고, 실제 조립·발행은
+        # _publish_app_status_tick()이 주기 타이머에서 한 번에 처리한다.
+        self._last_robot_status = None
+        self._last_global_odom = None
+        self._last_local_odom = None
+        # 조립된 마지막 JSON 문자열 — 신규 WS 클라이언트가 접속하면 다음 타이머 틱까지
+        # 기다리지 않고 이걸 바로 보내준다(ROS TRANSIENT_LOCAL이 WS 계층까지는 안 미치므로
+        # 이 캐시가 그 역할을 대신함).
+        self._last_app_status_json = None
+
+        # 진단(diagnostic_updater)용 최근 수신 시각 — gps_covariance_filler.py와 동일한
+        # time.monotonic() 기반 최근성 판정 패턴. 각 _on_* 콜백에서만 갱신한다.
+        self._last_map_msg_monotonic = None
+        self._last_robot_status_monotonic = None
+        self._last_global_odom_monotonic = None
+        self._last_local_odom_monotonic = None
+
+        # map_data(anchors) 신뢰성 전송 상태 — 앱의 MoveRequest 재전송 패턴과 동일하게
+        # msg_id 하나를 pending으로 추적하다가 app_ack를 받으면 해제한다.
+        self._last_sent_map_points = None
+        self._pending_map_data = None  # {'msg_id','json','retry_count','last_sent_monotonic'}
+        self._map_data_last_delivery_failed = False
+
+        # mission_state_machine.py가 /robot_status를 RELIABLE+TRANSIENT_LOCAL(latched)로
+        # 발행하므로 구독 쪽도 durability를 맞춰야 late-join 시 마지막 값을 실제로 받는다
+        # (구독 쪽이 기본 VOLATILE이면 QoS는 호환되어 에러는 안 나지만, 늦게 구독해도 과거
+        # 값을 재생해주지 않고 그 다음 변화부터만 받게 됨 — 실행 확인됨). uwb_virtual_map_publisher.py
+        # 의 /map도 같은 latched 계약(map_server 방식)이라 같은 QoS를 재사용한다.
+        latched_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
         )
+        self.create_subscription(Status, ROBOT_STATUS_TOPIC, self._on_robot_status, latched_qos)
+        self.create_subscription(Odometry, ODOMETRY_GLOBAL_TOPIC, self._on_odometry_global, 10)
+        self.create_subscription(Odometry, ODOMETRY_LOCAL_TOPIC, self._on_odometry_local, 10)
+        self.create_subscription(OccupancyGrid, MAP_TOPIC, self._on_map, latched_qos)
         self.create_subscription(
-            String, APP_ROBOT_STATUS_TOPIC, self._on_app_robot_status, app_status_qos)
-        self.create_subscription(
-            String, APP_CONTROL_STATE_ACK_TOPIC, self._on_app_control_state_ack, 10)
+            Bool, CALIBRATION_COMPLETE_TOPIC, self._on_calibration_complete, latched_qos)
+        self.create_subscription(Twist, CMD_VEL_MANUAL_TOPIC, self._on_cmd_vel_manual, 10)
+
+        # MoveRequest 처리 상태 — 판단·Nav2 액션 클라이언트 연동·WS 응답까지 이 노드가
+        # 전담한다(별도 mission 쪽 노드 없음). calibration_complete는 CAL을 한 번이라도
+        # 완료했는지 판단하는 재료.
+        self._calibration_complete = False
+        self._active_move_goal_handle = None
+        self._last_move_msg_id = None
+        self._nav2_client = ActionClient(self, NavigateToPose, NAV2_ACTION_NAME)
+        # wait_for_server처럼 블로킹되는 Nav2 호출을 WS asyncio 스레드/rclpy spin 스레드와
+        # 분리하기 위한 전용 워커풀 — 여기서 블로킹돼도 WS 메시지 처리는 안 막힌다.
+        self._move_worker_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix='move_goal')
 
         # Shared state between the asyncio thread and the ROS timer thread.
         # NOTE: names are prefixed with _ws_ to avoid clashing with rclpy's
@@ -143,10 +290,17 @@ class AppWebSocketBridge(Node):
         self._ws_server_thread.start()
 
         self.create_timer(self.heartbeat_period_sec, self._heartbeat_check)
+        self.create_timer(self.app_status_publish_period_sec, self._publish_app_status_tick)
+        self.create_timer(self.map_data_retry_check_period_sec, self._map_data_retry_check)
 
         self._diag_updater = diagnostic_updater.Updater(self)
         self._diag_updater.setHardwareID('app_websocket_bridge')
         self._diag_updater.add('WebSocket link', self._diagnostics_callback)
+        self._diag_updater.add('Map reception', self._map_diag_callback)
+        self._diag_updater.add('Robot status reception', self._robot_status_diag_callback)
+        self._diag_updater.add('Global odometry reception', self._global_odom_diag_callback)
+        self._diag_updater.add('Local odometry reception', self._local_odom_diag_callback)
+        self._diag_updater.add('Map data delivery', self._map_data_delivery_diag_callback)
 
         self.get_logger().info(
             f'[AppWsBridge] Starting WebSocket server on {self.host}:{self.port} '
@@ -207,9 +361,9 @@ class AppWebSocketBridge(Node):
         self.get_logger().info(f'[AppWsBridge] Client connected: {peer}')
         with self._ws_lock:
             self._ws_clients.add(websocket)
-        if self._last_robot_status_json is not None:
+        if self._last_app_status_json is not None:
             try:
-                await websocket.send(self._last_robot_status_json)
+                await websocket.send(self._last_app_status_json)
             except Exception as e:
                 self.get_logger().warn(f'[AppWsBridge] Failed to send initial status to {peer}: {e}')
         try:
@@ -252,26 +406,213 @@ class AppWebSocketBridge(Node):
             out = String()
             out.data = json.dumps(data)
             self.command_pub.publish(out)
+            if data.get('command') == 'move':
+                self._handle_move_command(data, peer)
         elif data.keys() & CONTROL_STATE_KEYS:
             out = String()
             out.data = json.dumps(data)
             self.control_state_pub.publish(out)
+        elif data.get('type') == 'app_ack':
+            self._on_app_ack(data.get('msg_id'))
         else:
             self.get_logger().warn(
                 f'[AppWsBridge] Unrecognized message shape from {peer}: {list(data.keys())}',
                 throttle_duration_sec=5.0)
 
-    # ------------------------------------------------------ app handshake relay
-    def _on_app_robot_status(self, msg: String) -> None:
-        """`/app/robot_status` 구독 콜백 — 최신 값을 캐시해두고(신규 접속
-        클라이언트용) 지금 붙어있는 클라이언트 전체에 그대로 중계한다."""
-        self._last_robot_status_json = msg.data
-        self._broadcast_to_clients(msg.data)
+    # ------------------------------------------------------ app status assembly
+    def _on_robot_status(self, msg: Status) -> None:
+        """`/robot_status` 구독 콜백 — 최신값 캐싱만, 조립·발행은 타이머가 한다."""
+        self._last_robot_status = msg
+        self._last_robot_status_monotonic = time.monotonic()
 
-    def _on_app_control_state_ack(self, msg: String) -> None:
-        """`/app/control_state_ack` 구독 콜백 — 캐싱 없이 그대로 중계한다
-        (매 명령마다 오는 1회성 응답이라 재접속 시 다시 보내줄 대상이 아님)."""
-        self._broadcast_to_clients(msg.data)
+    def _on_odometry_global(self, msg: Odometry) -> None:
+        """`/odometry/global`(GPS+IMU 전역 EKF) 구독 콜백 — tag_x/tag_y/tag_ori 소스."""
+        self._last_global_odom = msg
+        self._last_global_odom_monotonic = time.monotonic()
+
+    def _on_odometry_local(self, msg: Odometry) -> None:
+        """`/odom`(IMU 로컬 EKF) 구독 콜백 — tag_vel/tag_yaw_rate 소스."""
+        self._last_local_odom = msg
+        self._last_local_odom_monotonic = time.monotonic()
+
+    # -------------------------------------------------------------- map_data
+    def _on_map(self, msg: OccupancyGrid) -> None:
+        """`/map` 구독 콜백 — 점유 셀 꼭짓점을 추출해서, 직전에 보낸 것과
+        내용이 다르면(dedup) 새 `map_data` 메시지로 앱에 전송하고 신뢰성
+        전송 추적을 시작한다. 200x200 그리드라 매 틱(최대 10Hz) 추출해도
+        비용이 미미해서 캐싱 없이 콜백에서 바로 계산한다.
+        """
+        self._last_map_msg_monotonic = time.monotonic()
+        points = _extract_map_points(msg, self.map_occupied_threshold)
+
+        if points == self._last_sent_map_points:
+            return
+        self._last_sent_map_points = points
+
+        msg_id = uuid.uuid4().hex[:8]
+        payload = {'type': 'map_data', 'msg_id': msg_id, 'anchors': points}
+        text = json.dumps(payload)
+
+        self._pending_map_data = {
+            'msg_id': msg_id,
+            'json': text,
+            'retry_count': 0,
+            'last_sent_monotonic': time.monotonic(),
+        }
+        self.get_logger().info(
+            f'[AppWsBridge] Sending map_data [ID: {msg_id}] with {len(points)} point(s)')
+        self._broadcast_to_clients(text)
+
+    def _on_app_ack(self, msg_id) -> None:
+        """앱이 보낸 `app_ack` 처리 — pending map_data와 msg_id가 일치하면
+        재전송을 멈춘다."""
+        pending = self._pending_map_data
+        if pending is not None and pending['msg_id'] == msg_id:
+            self._pending_map_data = None
+            self._map_data_last_delivery_failed = False
+            self.get_logger().info(f'[AppWsBridge] map_data acked [ID: {msg_id}]')
+
+    def _map_data_retry_check(self) -> None:
+        """주기 타이머 — pending map_data가 timeout을 넘겼는데 아직 ack가 안
+        왔으면 재전송한다(앱의 SocketManager.enqueueRetry와 동일한 패턴:
+        고정 timeout, 최대 횟수 후 포기)."""
+        pending = self._pending_map_data
+        if pending is None:
+            return
+        elapsed = time.monotonic() - pending['last_sent_monotonic']
+        if elapsed < self.map_data_retry_timeout_sec:
+            return
+
+        if pending['retry_count'] >= self.map_data_max_retries:
+            self.get_logger().warning(
+                f"[AppWsBridge] map_data [ID: {pending['msg_id']}] retry exhausted, giving up")
+            self._pending_map_data = None
+            self._map_data_last_delivery_failed = True
+            return
+
+        pending['retry_count'] += 1
+        pending['last_sent_monotonic'] = time.monotonic()
+        self.get_logger().info(
+            f"[AppWsBridge] Retrying map_data [ID: {pending['msg_id']}] "
+            f"({pending['retry_count']}/{self.map_data_max_retries})")
+        self._broadcast_to_clients(pending['json'])
+
+    # -------------------------------------------------------------- move (MoveRequest)
+    def _on_calibration_complete(self, msg: Bool) -> None:
+        """`/jangauto_mission/calibration_complete` 구독 콜백 — 최신값만 캐싱."""
+        self._calibration_complete = msg.data
+
+    def _on_cmd_vel_manual(self, msg: Twist) -> None:
+        """조이스틱 출력 구독 콜백 — 0이 아닌 값이 오면(=조작 시작) 진행 중인 move
+        goal을 취소한다. `cmd_vel_arbiter.py`의 우선순위(조이스틱이 항상 이김)와는
+        별개로, Nav2가 배경에서 goal을 계속 쫓는 것 자체를 멈추기 위함."""
+        if msg.linear.x == 0.0 and msg.angular.z == 0.0:
+            return
+        goal_handle = self._active_move_goal_handle
+        if goal_handle is not None:
+            self.get_logger().info('[AppWsBridge] Joystick engaged — cancelling active move goal')
+            goal_handle.cancel_goal_async()
+            self._active_move_goal_handle = None
+
+    def _handle_move_command(self, data: dict, _peer) -> None:
+        """`/app/command`의 `command=="move"` 처리 — 수락 조건을 판단하고, 거부면
+        즉시 응답, 수락이면 워커풀에 Nav2 goal 전송을 위임한다."""
+        msg_id = data.get('msg_id')
+        if msg_id is not None and msg_id == self._last_move_msg_id:
+            # 앱의 자체 재시도로 같은 요청이 반복 도착 — 또 goal을 보내지 않는다.
+            return
+        self._last_move_msg_id = msg_id
+
+        current_mode = self._last_robot_status.mode if self._last_robot_status else None
+        if not self._calibration_complete:
+            self._send_move_ack(msg_id, False, 'CAL을 아직 완료하지 않음')
+            return
+        if current_mode not in MOVE_ALLOWED_MODES:
+            self._send_move_ack(
+                msg_id, False,
+                f'현재 {current_mode} 상태에서는 이동 명령을 받을 수 없음(KEY/CAL만 가능)')
+            return
+
+        x = data.get('x')
+        y = data.get('y')
+        if self._active_move_goal_handle is not None:
+            # 최신 요청이 이전 요청을 대체 — map_data와 동일한 "최신 우선" 원칙.
+            self._active_move_goal_handle.cancel_goal_async()
+            self._active_move_goal_handle = None
+        self._move_worker_pool.submit(self._send_nav2_goal, msg_id, x, y)
+
+    def _send_nav2_goal(self, msg_id, x, y) -> None:
+        """워커 스레드에서 실행 — Nav2 액션 서버 대기(블로킹)는 이 스레드에서만
+        일어나므로 WS/rclpy spin 스레드는 영향받지 않는다."""
+        if not self._nav2_client.wait_for_server(timeout_sec=NAV2_WAIT_FOR_SERVER_TIMEOUT_SEC):
+            self._send_move_ack(msg_id, False, 'Nav2 액션 서버 응답 없음')
+            return
+
+        goal = NavigateToPose.Goal()
+        goal.pose.header.frame_id = 'map'
+        goal.pose.pose.position.x = float(x)
+        goal.pose.pose.position.y = float(y)
+        goal.pose.pose.orientation.w = 1.0  # MoveRequest에 방향 필드가 없어 기본값 사용
+
+        self._nav2_client.send_goal_async(goal).add_done_callback(
+            lambda future: self._on_nav2_goal_response(future, msg_id))
+
+    def _on_nav2_goal_response(self, future, msg_id) -> None:
+        """Nav2가 goal 수락/거부를 응답한 시점(mission_state_machine.py와 동일한
+        콜백 패턴 — 블로킹 `.result()` 안 씀)."""
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self._send_move_ack(msg_id, False, 'Nav2가 목표 지점을 거부함')
+            return
+        self._active_move_goal_handle = goal_handle
+        self._send_move_ack(msg_id, True, '')
+        goal_handle.get_result_async().add_done_callback(
+            lambda future: self._on_nav2_goal_result(future, msg_id))
+
+    def _on_nav2_goal_result(self, future, msg_id) -> None:
+        """goal이 끝남(성공/실패/취소 무관) — 더 이상 진행 중이 아니므로 추적 해제.
+        완료/도착 자체를 앱에 알리는 기능은 이번 범위 밖(앱도 기대 UI 없음)."""
+        if self._last_move_msg_id == msg_id:
+            self._active_move_goal_handle = None
+
+    def _send_move_ack(self, msg_id, accepted: bool, reason: str) -> None:
+        text = json.dumps({
+            'type': 'move_ack',
+            'msg_id': msg_id,
+            'accepted': accepted,
+            'reason': reason,
+        })
+        self._broadcast_to_clients(text)
+
+    def _publish_app_status_tick(self) -> None:
+        """주기 타이머 — 캐시된 `/robot_status`+`/odometry/global`+`/odom`을 모아
+        앱용 JSON을 조립해 WS로 브로드캐스트한다(ROS 토픽 재발행 없음). ack가 없는
+        지금, 이게 앱에 상태를 알리는 유일한 채널이자 로봇→앱 하트비트를 겸한다.
+        """
+        status = self._last_robot_status
+        if status is None:
+            return  # /robot_status를 아직 한 번도 못 받음(부팅 직후) — 보낼 게 없음
+
+        payload = {
+            'mode': status.mode,
+            'in_error': status.in_error,
+            'error_reason': status.error_reason,
+        }
+
+        odom = self._last_global_odom
+        if odom is not None:
+            payload['tag_x'] = odom.pose.pose.position.x
+            payload['tag_y'] = odom.pose.pose.position.y
+            payload['tag_ori'] = _quaternion_to_yaw(odom.pose.pose.orientation)
+
+        local_odom = self._last_local_odom
+        if local_odom is not None:
+            payload['tag_vel'] = local_odom.twist.twist.linear.x
+            payload['tag_yaw_rate'] = local_odom.twist.twist.angular.z
+
+        text = json.dumps(payload)
+        self._last_app_status_json = text
+        self._broadcast_to_clients(text)
 
     def _broadcast_to_clients(self, text: str) -> None:
         """rclpy 콜백 스레드에서 asyncio 이벤트 루프로 안전하게 넘겨서,
@@ -324,11 +665,50 @@ class AppWebSocketBridge(Node):
         stat.add('mdns_registered', str(self._mdns_service_info is not None))
         return stat
 
+    def _staleness_diag(self, stat, last_monotonic, timeout_sec, label):
+        """gps_covariance_filler.py와 동일한 최근성 판정 헬퍼 —
+        없음=ERROR / timeout_sec 초과=WARN / 정상=OK."""
+        if last_monotonic is None:
+            stat.summary(DiagnosticStatus.ERROR, f'No {label} received yet')
+        elif (time.monotonic() - last_monotonic) > timeout_sec:
+            stat.summary(DiagnosticStatus.WARN, f'{label} is stale')
+        else:
+            stat.summary(DiagnosticStatus.OK, f'Receiving {label}')
+        return stat
+
+    def _map_diag_callback(self, stat):
+        return self._staleness_diag(stat, self._last_map_msg_monotonic, MAP_STALE_TIMEOUT_SEC, '/map')
+
+    def _robot_status_diag_callback(self, stat):
+        return self._staleness_diag(
+            stat, self._last_robot_status_monotonic, ROBOT_STATUS_STALE_TIMEOUT_SEC, '/robot_status')
+
+    def _global_odom_diag_callback(self, stat):
+        return self._staleness_diag(
+            stat, self._last_global_odom_monotonic, ODOM_STALE_TIMEOUT_SEC, '/odometry/global')
+
+    def _local_odom_diag_callback(self, stat):
+        return self._staleness_diag(
+            stat, self._last_local_odom_monotonic, ODOM_STALE_TIMEOUT_SEC, '/odom')
+
+    def _map_data_delivery_diag_callback(self, stat):
+        if self._map_data_last_delivery_failed:
+            stat.summary(DiagnosticStatus.ERROR, 'Last map_data delivery exhausted retries')
+        elif self._pending_map_data is not None:
+            stat.summary(
+                DiagnosticStatus.WARN,
+                f"Retrying map_data [ID: {self._pending_map_data['msg_id']}] "
+                f"({self._pending_map_data['retry_count']}/{self.map_data_max_retries})")
+        else:
+            stat.summary(DiagnosticStatus.OK, 'No pending map_data')
+        return stat
+
     # ---------------------------------------------------------------- cleanup
     def destroy_node(self):
         """노드 종료 시 mDNS 등록 해제 + 웹소켓 서버 정리까지 마친 뒤
         상위 `Node.destroy_node()`를 호출한다."""
         self.get_logger().info('[AppWsBridge] Shutting down App WebSocket Bridge...')
+        self._move_worker_pool.shutdown(wait=False)
         if self._zeroconf is not None:
             try:
                 if self._mdns_service_info is not None:

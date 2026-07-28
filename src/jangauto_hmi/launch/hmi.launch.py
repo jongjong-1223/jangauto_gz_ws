@@ -1,7 +1,8 @@
 """`app_websocket_bridge` 노드 하나를 실행하는 launch 파일.
 
-- 아래 6개 launch argument는 전부 `app_websocket_bridge.py`의 ROS 파라미터로
-  그대로 전달된다(호스트/포트, 하트비트 주기, mDNS 광고 여부/이름).
+- 아래 launch argument는 전부 `app_websocket_bridge.py`의 ROS 파라미터로
+  그대로 전달된다(호스트/포트, 하트비트 주기, mDNS 광고 여부/이름, 앱용
+  상태 JSON 조립·브로드캐스트 주기).
 - 기본값은 `app_websocket_bridge.py` 자체의 `declare_parameter` 기본값과
   같아야 한다 — 여기서 바꾸면 실제 동작도 그 값으로 바뀐다.
 """
@@ -25,6 +26,21 @@ def generate_launch_description():
                                               description='Advertise a _robot._tcp.local. mDNS service for app NSD discovery.')
     mdns_instance_name_arg = DeclareLaunchArgument('mdns_instance_name', default_value='jangauto',
                                                     description='mDNS service instance name.')
+    app_status_publish_period_arg = DeclareLaunchArgument(
+        'app_status_publish_period_sec', default_value='0.2',
+        description='Period for assembling /robot_status+/odometry/global+/odom into app JSON and broadcasting over WS.')
+    map_data_retry_timeout_arg = DeclareLaunchArgument(
+        'map_data_retry_timeout_sec', default_value='1.0',
+        description='How long to wait for app_ack before resending map_data (matches the app\'s own RETRY_TIMEOUT_MS).')
+    map_data_max_retries_arg = DeclareLaunchArgument(
+        'map_data_max_retries', default_value='3',
+        description='Max resend attempts for map_data before giving up (matches the app\'s own MAX_RETRIES).')
+    map_data_retry_check_period_arg = DeclareLaunchArgument(
+        'map_data_retry_check_period_sec', default_value='0.2',
+        description='Polling period for checking whether a pending map_data delivery has timed out.')
+    map_occupied_threshold_arg = DeclareLaunchArgument(
+        'map_occupied_threshold', default_value='50',
+        description='Minimum OccupancyGrid cell value treated as occupied when extracting map_data vertices.')
 
     app_websocket_bridge_node = Node(
         package='jangauto_hmi',
@@ -38,6 +54,11 @@ def generate_launch_description():
             'heartbeat_timeout_sec': LaunchConfiguration('heartbeat_timeout_sec'),
             'mdns_enabled': LaunchConfiguration('mdns_enabled'),
             'mdns_instance_name': LaunchConfiguration('mdns_instance_name'),
+            'app_status_publish_period_sec': LaunchConfiguration('app_status_publish_period_sec'),
+            'map_data_retry_timeout_sec': LaunchConfiguration('map_data_retry_timeout_sec'),
+            'map_data_max_retries': LaunchConfiguration('map_data_max_retries'),
+            'map_data_retry_check_period_sec': LaunchConfiguration('map_data_retry_check_period_sec'),
+            'map_occupied_threshold': LaunchConfiguration('map_occupied_threshold'),
         }],
     )
 
@@ -48,5 +69,10 @@ def generate_launch_description():
         heartbeat_timeout_arg,
         mdns_enabled_arg,
         mdns_instance_name_arg,
+        app_status_publish_period_arg,
+        map_data_retry_timeout_arg,
+        map_data_max_retries_arg,
+        map_data_retry_check_period_arg,
+        map_occupied_threshold_arg,
         app_websocket_bridge_node,
     ])

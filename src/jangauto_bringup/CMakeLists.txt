@@ -11,6 +11,7 @@ find_package(jangauto_perception REQUIRED)
 find_package(jangauto_navigation2 REQUIRED)
 find_package(jangauto_hmi REQUIRED)
 find_package(jangauto_mission REQUIRED)
+find_package(jangauto_control REQUIRED)
 find_package(diagnostic_aggregator REQUIRED)
 
 # Install project launch files

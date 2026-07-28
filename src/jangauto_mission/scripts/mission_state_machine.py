@@ -6,9 +6,11 @@
   전이 가능 여부는 `ALLOWED_TARGETS` 규칙을 따른다(내려가는 전이는 항상 자유).
 - `/jangauto_mission/error`(내부 에러) 구독 → 보고되면 규칙 무시하고 즉시 STOP.
 - 명령 타임아웃 시에도 STOP(침묵을 위험 신호로 보는 fail-safe).
-- 결정된 모드를 `/robot_status`(jangauto_msg/Status)로 발행.
-- 앱과 핸드셰이크: 명령 1건당 수락/거부를 `/app/control_state_ack`로,
-  상태 변경마다 미러를 `/app/robot_status`로 발행(둘 다 `app_websocket_bridge.py`가 중계).
+- 결정된 모드를 `/robot_status`(jangauto_msg/Status)로 발행 — 전이 시 즉시 1회 +
+  `status_publish_period_sec` 주기로 재발행(변화 없어도 계속 나감). 앱에 보여줄 JSON
+  조립·명령별 개별 응답(ack)은 이제 이 노드의 책임이 아니다 — `app_websocket_bridge.py`가
+  `/robot_status`를 구독해서 직접 조립해 앱에 보낸다(ack 없이 이 토픽의 `mode` 변화만으로
+  앱이 수락 여부를 판단).
 - CAL/ALIGN/RUN은 상태 진입 시 액션 서버(`calibrate`/`align`/`run`, 현재 TODO
   placeholder)에 goal을 보내고, 결과도 앱 명령/에러와 같은 큐에 합류시켜 먼저
   끝나는 쪽으로 outcome 결정(`STATE_ACTIONS`, `wait_for_outcome()`). YASMIN
@@ -17,14 +19,14 @@
 
 ## 클래스 구성
 - `ControlAndErrorMonitor`: 앱 명령/내부 에러/액션 결과 세 이벤트를 판단해
-  outcome을 정하고, 상태/핸드셰이크 발행까지 전담하는 몸통(인스턴스 1개).
+  outcome을 정하고, `/robot_status` 발행까지 전담하는 몸통(인스턴스 1개).
 - `ControlAndErrorMonitorState`: YASMIN `State` 어댑터. 자체 로직 없이 monitor에
   위임하며, STOP/KEY/CAL/ALIGN/RUN 5개 인스턴스로 등록된다.
 
 ## main()의 동작 순서
 1. rclpy 초기화, YASMIN 싱글턴 노드 획득
-2. `/robot_status` 등 발행자 생성(latched QoS)
-3. `ControlAndErrorMonitor` 생성 → 두 토픽 구독 시작
+2. `/robot_status` 발행자 생성(latched QoS)
+3. `ControlAndErrorMonitor` 생성(두 토픽 구독 시작) → `/robot_status` 주기 재발행 타이머 등록
 4. 빈 `StateMachine` 생성, 5개 상태 등록(상태별 outcome/전이표는 `ALLOWED_TARGETS`
    기반, CAL/ALIGN/RUN은 `STATE_ACTIONS`의 액션 타입/이름도 같이 등록)
 5. 시작 상태를 STOP으로 지정
@@ -84,9 +86,8 @@ STATE_ACTIONS = {
 
 CONTROL_STATE_TOPIC = "/app/control_state"          # 구독: app_websocket_bridge가 재발행하는 앱 명령
 ERROR_TOPIC = "/jangauto_mission/error"             # 구독: 내부 에러 보고 채널
-STATUS_TOPIC = "/robot_status"                      # 발행: 현재 결정된 모드(ROS 전역, typed)
-APP_STATUS_TOPIC = "/app/robot_status"              # 발행: 앱 전용 상태 미러(JSON 문자열)
-APP_CONTROL_ACK_TOPIC = "/app/control_state_ack"    # 발행: 앱 명령 1건당 1개, 수락/거부 응답
+STATUS_TOPIC = "/robot_status"                      # 발행: 현재 결정된 모드(ROS 전역, typed) —
+                                                     # app_websocket_bridge.py가 이걸 구독해 앱 JSON을 직접 조립함
 
 # control_state가 이 시간(초) 이상 안 오면 TIMEOUT outcome -> STOP(fail-safe).
 CONTROL_TIMEOUT_SEC = 5.0
@@ -102,25 +103,23 @@ class ControlAndErrorMonitor:
     로직을 State 클래스가 아닌 여기 둔 이유는 `ControlAndErrorMonitorState` 참고.
     """
 
-    def __init__(self, node, status_pub, app_status_pub, app_ack_pub) -> None:
+    def __init__(self, node, status_pub) -> None:
         """
         Args:
             node: 구독/로거 생성에 쓰는 rclpy 노드(YASMIN 싱글턴).
             status_pub: `/robot_status` 발행용 Publisher(QoS는 `main()`에서 구성).
-            app_status_pub: `/app/robot_status`(앱 전용 JSON 미러) 발행용 Publisher.
-            app_ack_pub: `/app/control_state_ack`(앱 명령 수락/거부 응답) 발행용 Publisher.
         """
         self._node = node
         self._status_pub = status_pub
-        self._app_status_pub = app_status_pub
-        self._app_ack_pub = app_ack_pub
         # 구독 콜백 스레드와 wait_for_outcome() 실행 스레드를 잇는 이벤트 큐.
         # 앱 명령/에러뿐 아니라 액션 결과("action_done")도 같은 큐로 합류시켜
         # "여러 소스 중 먼저 온 것 하나를 처리"하는 동일한 fan-in 패턴을 쓴다.
         self._queue: "queue.Queue" = queue.Queue()
-        # 마지막 발행 내용 — 중복 발행 방지(dedup)용 비교 기준.
+        # 마지막 발행 내용 — 중복 발행 방지(dedup)용 비교 기준이자,
+        # publish_status_tick()이 주기 재발행할 때 쓰는 캐시.
         self._last_mode = None
         self._last_in_error = False
+        self._last_error_reason = ""
         # 액션 이름 -> ActionClient. 상태 진입마다 새로 만들지 않고 재사용.
         self._action_clients: dict = {}
 
@@ -138,10 +137,13 @@ class ControlAndErrorMonitor:
         self._queue.put(("error", msg.data))
 
     def _publish_status(self, mode: str, in_error: bool, error_reason: str) -> None:
-        """`/robot_status`·`/app/robot_status` 발행 — 상태를 알리는 유일한 통로.
+        """`/robot_status` 발행 — 상태 전이를 알리는 즉시 경로.
 
-        - 직전과 (mode, in_error)가 같으면 재발행하지 않는다.
-        - ERROR/TIMEOUT처럼 앱 명령이 원인이 아닌 전이도 포함(ack와 달리 원인 무관).
+        - 직전과 (mode, in_error)가 같으면 재발행하지 않는다(전이 시에만 반응하는
+          ROS 내부 소비자를 위한 경로 — 값이 같으면 이벤트가 아니므로 스킵).
+        - ERROR/TIMEOUT처럼 앱 명령이 원인이 아닌 전이도 포함.
+        - 이 뒤 앱에 보여줄 JSON 조립은 하지 않는다 — app_websocket_bridge.py가
+          `/robot_status`를 직접 구독해서 처리한다.
         """
         if mode == self._last_mode and in_error == self._last_in_error:
             return
@@ -152,34 +154,24 @@ class ControlAndErrorMonitor:
         status.error_reason = error_reason if in_error else ""
         self._status_pub.publish(status)
 
-        app_msg = String()
-        app_msg.data = json.dumps({
-            "mode": mode,
-            "in_error": in_error,
-            "error_reason": status.error_reason,
-        })
-        self._app_status_pub.publish(app_msg)
-
         self._last_mode = mode
         self._last_in_error = in_error
+        self._last_error_reason = status.error_reason
 
-    def _publish_ack(self, sw_bits, requested_mode: str, accepted: bool,
-                      current_mode: str, reason: str) -> None:
-        """`/app/control_state_ack` 발행 — 앱 명령 1건에 대한 응답.
-
-        - `sw_bits`/`requested_mode`는 요청 echo(요청ID 없이 값 자체가 correlation).
-        - `current_mode`는 로봇의 실제 현재 상태(authoritative) — 앱은 수락 여부와
-          무관하게 이 값에 맞춘다.
+    def publish_status_tick(self) -> None:
+        """주기 타이머 콜백 — 마지막으로 알려진 상태를 dedup 없이 그대로
+        재발행한다. ack가 없어진 지금, 앱이 명령 수락/거부를 알 수 있는 유일한
+        통로가 `/robot_status`(를 구독하는 app_websocket_bridge.py)이므로, 상태가
+        안 바뀌어도 계속 흘려보내야 늦게 붙는 구독자·앱이 최신 값을 놓치지 않는다.
         """
-        msg = String()
-        msg.data = json.dumps({
-            "sw_bits": sw_bits,
-            "requested_mode": requested_mode,
-            "accepted": accepted,
-            "current_mode": current_mode,
-            "reason": reason,
-        })
-        self._app_ack_pub.publish(msg)
+        if self._last_mode is None:
+            return  # 아직 한 번도 상태가 정해진 적 없음(부팅 직후) — 보낼 값이 없음
+        status = Status()
+        status.header.stamp = self._node.get_clock().now().to_msg()
+        status.mode = self._last_mode
+        status.in_error = self._last_in_error
+        status.error_reason = self._last_error_reason
+        self._status_pub.publish(status)
 
     def _get_action_client(self, action_type, action_name: str) -> ActionClient:
         client = self._action_clients.get(action_name)
@@ -277,15 +269,12 @@ class ControlAndErrorMonitor:
                     continue
 
                 if target not in ALLOWED_TARGETS[current_state_name]:
-                    # 순서 규칙 위반 — 전이 없이 거부만 응답하고 계속 대기.
-                    self._publish_ack(
-                        sw_bits, target, False, current_state_name,
-                        f"{current_state_name} -> {target} not allowed")
+                    # 순서 규칙 위반 — 전이 없이 그냥 무시하고 계속 대기(개별
+                    # 응답 채널 없음 — 앱은 /robot_status의 mode가 안 바뀌는 것으로 판단).
                     continue
 
                 retries = 0
                 self._publish_status(target, False, "")
-                self._publish_ack(sw_bits, target, True, target, "")
                 return f"APP_TO_{target}"
         finally:
             # 리턴 사유(명령/에러/타임아웃/액션결과)와 무관하게 이 호출의 액션은
@@ -359,16 +348,16 @@ def main(args=None):
         depth=1,
     )
     status_pub = node.create_publisher(Status, STATUS_TOPIC, status_qos)
-    # /app/robot_status도 /robot_status와 같은 latched QoS를 쓴다 — app_websocket_bridge.py가
-    # mission_state_machine.py보다 늦게 뜨거나 재시작해도, 구독하는 즉시 마지막 상태를
-    # 받아서 자기 캐시(신규 웹소켓 접속자에게 즉시 보내주는 값)를 채울 수 있어야 하기 때문
-    # (기본 QoS는 volatile이라 늦게 구독하면 그 사이의 마지막 메시지를 영영 못 받음).
-    app_status_pub = node.create_publisher(String, APP_STATUS_TOPIC, status_qos)
-    # ack는 명령 1건당 1회성 응답이라 latch 불필요 — 기본 QoS(depth 10) 그대로.
-    app_ack_pub = node.create_publisher(String, APP_CONTROL_ACK_TOPIC, 10)
 
     # 몸통은 여기서 1개만 생성 — 생성 시점에 두 토픽 구독이 시작된다.
-    monitor = ControlAndErrorMonitor(node, status_pub, app_status_pub, app_ack_pub)
+    monitor = ControlAndErrorMonitor(node, status_pub)
+
+    # /robot_status 주기 재발행 — 상태가 안 바뀌어도 계속 흘려보내야 app_websocket_bridge.py를
+    # 거쳐 앱까지 가는 유일한 상태 채널(ack 없음)이 끊기지 않는다.
+    node.declare_parameter('status_publish_period_sec', 0.5)
+    status_publish_period_sec = node.get_parameter(
+        'status_publish_period_sec').get_parameter_value().double_value
+    node.create_timer(status_publish_period_sec, monitor.publish_status_tick)
 
     # 최상위 StateMachine 자체는 정상 운용 중엔 끝나지 않는다 —
     # "SHUTDOWN"은 handle_sigint(Ctrl+C)를 위한 형식상 outcome.

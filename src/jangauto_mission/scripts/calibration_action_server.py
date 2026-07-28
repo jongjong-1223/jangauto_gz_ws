@@ -14,6 +14,9 @@
   제거한다.
 - 실제 알고리즘이 정해지면 `_execute_callback()` 내부만 채우면 되고,
   `mission_state_machine.py`의 호출부는 바뀔 필요가 없다.
+- 캘리브레이션이 한 번이라도 성공하면 `/jangauto_mission/calibration_complete`
+  (`std_msgs/Bool`)를 주기 발행한다 — `app_websocket_bridge.py`가 이걸로
+  MoveRequest 수락 조건("CAL을 거친 적 있는가")을 판단한다.
 """
 
 import time
@@ -21,6 +24,8 @@ import time
 import rclpy
 from rclpy.action import ActionServer
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Bool
 
 from jangauto_msg.action import Calibrate
 
@@ -28,19 +33,42 @@ from jangauto_msg.action import Calibrate
 # TODO: 실제 캘리브레이션 로직이 들어가면 제거.
 PLACEHOLDER_DELAY_SEC = 2.0
 
+CALIBRATION_COMPLETE_TOPIC = '/jangauto_mission/calibration_complete'
+CALIBRATION_COMPLETE_PUBLISH_PERIOD_SEC = 1.0
+
 
 class CalibrationActionServer(Node):
     """`calibrate` 액션 서버 — 액션 이름/타입만 확정, 내부 로직은 TODO."""
 
     def __init__(self):
         super().__init__('calibration_action_server')
+
+        # 늦게 붙는 구독자(app_websocket_bridge 재시작 등)도 최신값을 즉시
+        # 받도록 latched QoS — mission_state_machine.py의 /robot_status와 동일한 계약.
+        complete_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self._complete_pub = self.create_publisher(Bool, CALIBRATION_COMPLETE_TOPIC, complete_qos)
+        self._complete = False
+        self.create_timer(CALIBRATION_COMPLETE_PUBLISH_PERIOD_SEC, self._publish_complete)
+
         self._server = ActionServer(
             self, Calibrate, 'calibrate', self._execute_callback)
+
+    def _publish_complete(self) -> None:
+        msg = Bool()
+        msg.data = self._complete
+        self._complete_pub.publish(msg)
 
     def _execute_callback(self, goal_handle):
         """goal 수신 콜백. TODO: 실제 캘리브레이션 로직으로 교체."""
         time.sleep(PLACEHOLDER_DELAY_SEC)
         goal_handle.succeed()
+        self._complete = True
+        self._publish_complete()
         result = Calibrate.Result()
         result.success = True
         result.message = "TODO: calibration logic not implemented yet"
