@@ -8,7 +8,9 @@
 - **in_error는 한 번 켜지면 영구 래치** — 진단이 회복되거나 앱이 어떤 명령을
   보내도 소프트웨어적으로 안 풀린다(물리 E-stop 리셋과 동일한 개념). 실제
   복구는 원인을 고치고 이 노드를 재시작해야만 가능.
-- 명령 타임아웃 시에도 STOP(침묵을 위험 신호로 보는 fail-safe).
+- 앱은 선택 장비다(없어도 로봇이 동작해야 함) — `control_state`가 안 와도
+  침묵을 에러로 취급하지 않는다. 명령을 기다리는 동안은 그냥 현재 상태를
+  유지(부팅 직후 기본값은 STOP)하며 무한 대기한다.
 - 결정된 모드를 `/robot_status`(jangauto_msg/Status)로 발행 — 전이 시 즉시 1회 +
   `status_publish_period_sec` 주기로 재발행(변화 없어도 계속 나감). 앱에 보여줄 JSON
   조립·명령별 개별 응답(ack)은 이제 이 노드의 책임이 아니다 — `app_websocket_bridge.py`가
@@ -92,10 +94,6 @@ ERROR_TOPIC = "/jangauto_mission/error"             # 구독: 내부 에러 보�
 STATUS_TOPIC = "/robot_status"                      # 발행: 현재 결정된 모드(ROS 전역, typed) —
                                                      # app_websocket_bridge.py가 이걸 구독해 앱 JSON을 직접 조립함
 
-# control_state가 이 시간(초) 이상 안 오면 TIMEOUT outcome -> STOP(fail-safe).
-CONTROL_TIMEOUT_SEC = 5.0
-CONTROL_MAX_RETRY = 1
-
 
 class ControlAndErrorMonitor:
     """상태 판단 로직의 몸통 — `/app/control_state`·`/jangauto_mission/error` 구독과
@@ -119,8 +117,12 @@ class ControlAndErrorMonitor:
         # "여러 소스 중 먼저 온 것 하나를 처리"하는 동일한 fan-in 패턴을 쓴다.
         self._queue: "queue.Queue" = queue.Queue()
         # 마지막 발행 내용 — 중복 발행 방지(dedup)용 비교 기준이자,
-        # publish_status_tick()이 주기 재발행할 때 쓰는 캐시.
-        self._last_mode = None
+        # publish_status_tick()이 주기 재발행할 때 쓰는 캐시. 초깃값을 실제
+        # 시작 상태(STOP)로 맞춰둬서, 명령이 한 번도 안 와도 주기 타이머가
+        # 부팅 직후부터 바로 "STOP"을 흘려보낸다(앱이 로봇 생존 여부를
+        # `/robot_status` 수신만으로 판단하므로, 첫 이벤트 전까지 토픽이
+        # 완전히 비어있으면 안 됨).
+        self._last_mode = "STOP"
         self._last_in_error = False
         self._last_error_reason = ""
         # 액션 이름 -> ActionClient. 상태 진입마다 새로 만들지 않고 재사용.
@@ -144,7 +146,7 @@ class ControlAndErrorMonitor:
 
         - 직전과 (mode, in_error)가 같으면 재발행하지 않는다(전이 시에만 반응하는
           ROS 내부 소비자를 위한 경로 — 값이 같으면 이벤트가 아니므로 스킵).
-        - ERROR/TIMEOUT처럼 앱 명령이 원인이 아닌 전이도 포함.
+        - ERROR처럼 앱 명령이 원인이 아닌 전이도 포함.
         - 이 뒤 앱에 보여줄 JSON 조립은 하지 않는다 — app_websocket_bridge.py가
           `/robot_status`를 직접 구독해서 처리한다.
         """
@@ -166,9 +168,9 @@ class ControlAndErrorMonitor:
         재발행한다. ack가 없어진 지금, 앱이 명령 수락/거부를 알 수 있는 유일한
         통로가 `/robot_status`(를 구독하는 app_websocket_bridge.py)이므로, 상태가
         안 바뀌어도 계속 흘려보내야 늦게 붙는 구독자·앱이 최신 값을 놓치지 않는다.
+        `_last_mode`가 생성자에서 이미 "STOP"으로 초기화돼있어 부팅 직후
+        첫 틱부터 바로 발행된다.
         """
-        if self._last_mode is None:
-            return  # 아직 한 번도 상태가 정해진 적 없음(부팅 직후) — 보낼 값이 없음
         status = Status()
         status.header.stamp = self._node.get_clock().now().to_msg()
         status.mode = self._last_mode
@@ -197,8 +199,8 @@ class ControlAndErrorMonitor:
         Returns:
             - "APP_TO_<모드>": 앱 명령 수락, 또는 이 상태 액션 성공(self-loop).
             - "ERROR": 에러 보고 또는 액션 실패 — 무조건 STOP.
-            - "TIMEOUT": 명령 부재 — 안전을 위해 STOP.
-            (거부된 요청은 outcome 없이 계속 대기)
+            (거부된 요청·명령 부재는 outcome 없이 계속 대기 — 앱은 선택
+            장비라 침묵을 에러로 취급하지 않는다)
         """
         # 액션이 있으면 진입과 동시에 goal 전송, 결과를 같은 큐로 흘려보낸다.
         # still_relevant: 이 호출 종료 후 뒤늦게 도착하는 결과가 다음 호출의
@@ -233,16 +235,10 @@ class ControlAndErrorMonitor:
                 client.send_goal_async(action_type.Goal()).add_done_callback(_on_goal_response)
 
         try:
-            retries = 0
             while True:
-                try:
-                    kind, data = self._queue.get(timeout=CONTROL_TIMEOUT_SEC)
-                except queue.Empty:
-                    retries += 1
-                    if retries > CONTROL_MAX_RETRY:
-                        self._publish_status("STOP", True, "no command received (timeout)")
-                        return "TIMEOUT"
-                    continue
+                # 앱은 선택 장비다 — 타임아웃 없이 다음 이벤트(명령/에러/액션결과)를
+                # 그냥 무한 대기한다. 명령이 안 온다고 해서 위험 신호로 보지 않는다.
+                kind, data = self._queue.get()
 
                 if self._last_in_error:
                     # in_error는 한 번 켜지면 이 프로세스가 살아있는 동안 영구
@@ -287,7 +283,6 @@ class ControlAndErrorMonitor:
                     # 응답 채널 없음 — 앱은 /robot_status의 mode가 안 바뀌는 것으로 판단).
                     continue
 
-                retries = 0
                 self._publish_status(target, False, "")
                 return f"APP_TO_{target}"
         finally:
@@ -335,11 +330,10 @@ def _build_outcomes_and_transitions(state_name: str):
 
     - 앱 명령으로 낼 수 있는 outcome은 목표 모드마다 `"APP_TO_<모드>"` 형태
       (예: STOP 상태는 ALIGN까지만 허용되므로 `"APP_TO_RUN"`이 아예 없음).
-    - ERROR/TIMEOUT은 모든 상태에 공통이며 항상 STOP으로 귀결된다.
+    - ERROR는 모든 상태에 공통이며 항상 STOP으로 귀결된다.
     """
     transitions = {f"APP_TO_{target}": target for target in ALLOWED_TARGETS[state_name]}
     transitions["ERROR"] = "STOP"
-    transitions["TIMEOUT"] = "STOP"
     return list(transitions.keys()), transitions
 
 

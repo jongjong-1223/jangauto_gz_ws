@@ -311,7 +311,21 @@ collision_monitor:
     stop_pub_timeout: 2.0
     # Polygons represent zone around the robot for "stop", "slowdown" and "limit" action types,
     # and robot footprint for "approach" action type.
-    polygons: ["FootprintApproach"]
+    # "approach" 하나만 있으면 안전 속도가 거리에 비례해서(distance/time_before_collision)
+    # 줄어들 뿐 정확히 0에 수렴하진 않아서, 방치하면 아주 느린 속도로나마 결국
+    # 접촉한다(실측으로 확인됨). 그래서 실제 footprint([[0.55,0.85],...],
+    # local_costmap과 동일)보다 여유를 준 PolygonStop을 추가해 "approach"가 못
+    # 줄이는 마지막 구간을 하드스톱으로 막는다.
+    #
+    # PolygonStop 앞쪽 경계는 x=0.85로 잡는다(단순히 footprint+0.1이 아님) —
+    # front_depth_camera가 x=0.55(footprint 앞쪽과 동일 지점)에 near clip 0.1m로
+    # 달려있어서 카메라가 볼 수 있는 최소 거리가 x≈0.65다. 앞서 x=0.65로 잡았을 때
+    # 정지 구간 진입과 카메라 사각지대 진입이 겹쳐서 포인트가 아예 안 잡히고
+    # min_points 조건이 충족 안 돼 STOP이 한 번도 안 걸리는 문제를 실측으로 확인함.
+    # x=0.85로 두면 카메라가 확실히 볼 수 있는 구간(0.65~0.85) 안에서 먼저
+    # min_points를 채워 STOP을 걸 수 있고, 실제 접촉 지점(x=0.55+박스 반폭)보다도
+    # 충분히 앞이라 안전 여유도 확보된다.
+    polygons: ["FootprintApproach", "PolygonStop"]
     FootprintApproach:
       type: "polygon"
       action_type: "approach"
@@ -319,6 +333,13 @@ collision_monitor:
       time_before_collision: 1.2
       simulation_time_step: 0.1
       min_points: 6
+      visualize: False
+      enabled: True
+    PolygonStop:
+      type: "polygon"
+      action_type: "stop"
+      points: "[[0.85, 0.85], [0.85, -0.85], [-0.55, -0.85], [-0.55, 0.85]]"
+      min_points: 4
       visualize: False
       enabled: True
     # 라이다가 없어서(/scan은 dangling) 뎁스카메라 포인트클라우드로 대체.

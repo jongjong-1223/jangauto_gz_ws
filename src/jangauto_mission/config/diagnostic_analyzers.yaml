@@ -1,12 +1,18 @@
 # diagnostic_aggregator 설정.
-# 지금은 우리 커스텀 노드 2개(app_websocket_bridge, gps_covariance_filler)만
-# diagnostic_updater를 붙였으므로 그룹도 그 둘만 정의한다. 노드가 늘어나면
-# 그룹만 추가하면 됨.
+# diagnostic_updater/robot_localization/nav2가 내보내는 진단을 의미 있는
+# 그룹으로 묶는다. 여기 안 걸리는 진단은 diagnostic_aggregator의 catch-all
+# `/Other`로 뭉뚱그려져 들어가므로, 새 노드가 진단을 추가하면 그룹도 같이
+# 추가할 것 — 안 그러면 `/Other`가 무엇 때문에 ERROR인지 알아보기 어렵다.
 #
 # contains/path 매칭 문자열은 diagnostic_updater가 내보내는
 # DiagnosticStatus.name 포맷("<node_name>: <task_name>")에 기반한 부분
 # 문자열 매칭이다 - 빌드 후 `ros2 topic echo /diagnostics`로 실측하고
 # 필요하면 보정할 것.
+#
+# GPS/Localization/Nav2/Control은 mission_diagnostics_monitor.py의
+# included_groups(mission.launch.py에서 설정)에 포함돼 ERROR 시 실제
+# STOP까지 이어진다. HMI는 의도적으로 제외돼 있다 — 이유는
+# mission_diagnostics_monitor.py 모듈 docstring 참고.
 /**:
   ros__parameters:
     analyzers:
@@ -18,3 +24,15 @@
         type: diagnostic_aggregator/GenericAnalyzer
         path: GPS
         contains: ['gps_covariance_filler']
+      localization:
+        type: diagnostic_aggregator/GenericAnalyzer
+        path: Localization
+        contains: ['ekf_local', 'ekf_global']
+      nav2:
+        type: diagnostic_aggregator/GenericAnalyzer
+        path: Nav2
+        contains: ['lifecycle_manager_navigation']
+      control:
+        type: diagnostic_aggregator/GenericAnalyzer
+        path: Control
+        contains: ['cmd_vel_twist_lpf']

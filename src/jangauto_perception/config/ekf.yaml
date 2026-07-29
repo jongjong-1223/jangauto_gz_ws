@@ -1,8 +1,14 @@
 ekf_local:
   ros__parameters:
     frequency: 25.0              # Filter update rate
-    sensor_timeout: 0.5           # Timeout if no sensor data is received 
+    sensor_timeout: 0.5           # Timeout if no sensor data is received
     two_d_mode: true              # If true, Z, roll, and pitch are ignored
+
+    # false(기본값)면 "odometry/filtered topic status" 진단 태스크는 등록만
+    # 되고 카운터를 올리는 tick()은 호출 안 돼서 diagnostic_aggregator에
+    # 영원히 "No events recorded" ERROR로 잡힘(robot_localization 자체
+    # 동작이며, 필터링/퍼블리시는 이 값과 무관하게 정상 동작함).
+    print_diagnostics: true
 
     # Frame Settings
     map_frame: map                # Global fixed frame
@@ -78,6 +84,9 @@ ekf_global:
     frequency: 25.0
     sensor_timeout: 0.5
     two_d_mode: true
+
+    # ekf_local과 동일한 이유로 필요(위 주석 참고).
+    print_diagnostics: true
 
     # Frame Settings
     map_frame: map                
