@@ -117,6 +117,10 @@ local_costmap:
         observation_sources: depth_cloud
         depth_cloud:
           topic: /front_depth_camera/points
+          # min_obstacle_height 없으면 카메라가 보는 바닥면(z~0)까지 전부 장애물로
+          # 잡혀서, 지도 전체가 하나의 거대한 점유 덩어리로 이어져버린다(실측
+          # 확인됨). 0.05m로 바닥은 걸러내고 실제로 솟은 장애물만 남긴다.
+          min_obstacle_height: 0.05
           max_obstacle_height: 2.0
           clearing: True
           marking: True
@@ -133,8 +137,10 @@ local_costmap:
 global_costmap:
   global_costmap:
     ros__parameters:
-      update_frequency: 1.0
-      publish_frequency: 1.0
+      # app_websocket_bridge.py가 이 costmap을 구독해 앱에 장애물을 보여주므로
+      # local_costmap(5Hz)/app 상태 브로드캐스트(5Hz)와 맞춰 5Hz로 갱신.
+      update_frequency: 5.0
+      publish_frequency: 5.0
       global_frame: map
       robot_base_frame: base_link
       # tracked_v3 차체(길이 1.1m x 트랙 바깥쪽 폭 1.7m, base_link 중심) 기준 사각형 footprint.
@@ -149,6 +155,10 @@ global_costmap:
         observation_sources: depth_cloud
         depth_cloud:
           topic: /front_depth_camera/points
+          # min_obstacle_height 없으면 카메라가 보는 바닥면(z~0)까지 전부 장애물로
+          # 잡혀서, 지도 전체가 하나의 거대한 점유 덩어리로 이어져버린다(실측
+          # 확인됨). 0.05m로 바닥은 걸러내고 실제로 솟은 장애물만 남긴다.
+          min_obstacle_height: 0.05
           max_obstacle_height: 2.0
           clearing: True
           marking: True

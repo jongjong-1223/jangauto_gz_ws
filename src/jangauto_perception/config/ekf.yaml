@@ -29,18 +29,40 @@ ekf_local:
 
     imu0_differential: false      # If true, uses difference from previous step
     imu0_relative: false          # If true, sets initial measurement to 0
-    imu0_remove_gravitational_acceleration: true # Removes gravity vector 
+    imu0_remove_gravitational_acceleration: true # Removes gravity vector
+
+    # Sensor Input (cmd_vel_out을 LPF+공분산 부착한 pseudo-velocity, cmd_vel_twist_lpf.py 발행)
+    # 바퀴 엔코더/UWB 속도 센서가 없어서 선속도(Vx)의 유일한 소스 — Vy는 트랙
+    # 로봇이 옆으로 미끄러지지 않는다는 비홀로노믹 제약(항상 0), Vyaw는 IMU
+    # 자이로와 겹치므로, 둘 다 covariance를 크게 잡아 IMU/실측보다 낮게 신뢰함.
+    twist0: cmd_vel_twist_filtered
+    twist0_config: [false, false, false,  # Position: N/A for twist
+                    false, false, false,  # Orientation: N/A for twist
+                    true,  true,  false,  # Linear Vel: Vx(pseudo-측정)+Vy(비홀로노믹 0 가정)
+                    false, false, true,   # Angular Vel: Vyaw만 사용(낮은 신뢰로)
+                    false, false, false]  # Linear Accel: N/A for twist
+    twist0_queue_size: 10
+    twist0_differential: false
+    twist0_relative: false
 
     # Covariance Matrices
     # Defines uncertainty. Lower values = higher trust in that variable.
     
-    # process_noise_covariance: Model uncertainty
-    # 실험: 속도(vX,vY,vZ)/가속도(aX,aY,aZ) 항목을 0.01 -> 훨씬 낮게 낮춰서
-    # "필터가 자기 예측 모델을 더 신뢰하고 노이즈 많은 IMU 가속도 측정에
-    # 덜 휘둘리게" 튜닝 (드리프트 개선 효과 실측 비교용, 베이스라인은 전부 0.01).
+    # process_noise_covariance: Model uncertainty(대각 성분, 15개 = X,Y,Z,Roll,
+    # Pitch,Yaw,Vx,Vy,Vz,Vroll,Vpitch,Vyaw,Ax,Ay,Az 순 — robot_localization은
+    # 대각만 넣는 축약 표기를 지원). 값이 작을수록 "내 예측 모델을 더 믿고
+    # 새 측정에 덜 휘둘림" — 즉 이 값이 측정 covariance보다 너무 작으면
+    # Kalman gain이 낮아져서 아무리 좋은 센서가 들어와도 거의 반영 안 됨.
+    #
+    # Vx/Vy는 베이스라인 0.01 유지 — twist0(cmd_vel_twist_filtered)로 실제
+    # 속도 pseudo-measurement가 들어오는 지금은, 이걸 0.0001처럼 너무 낮게
+    # 잡으면 그 새 측정치가 필터에 거의 반영되지 못한다(로봇 최대 가속도
+    # 2.5 m/s²만 봐도 초당 0.01(m/s)² 분산 성장은 비현실적으로 작음).
+    # Ax/Ay/Az는 실제 IMU 가속도 측정이 직접 들어오는 축이라, 노이즈 많은
+    # 원본값에 덜 휘둘리도록 계속 낮게(0.001) 유지.
     process_noise_covariance: [0.01,   0.01,   0.01,
                                0.01,   0.01,   0.01,
-                               0.0001, 0.0001, 0.0001,
+                               0.01,   0.01,   0.0001,
                                0.01,   0.01,   0.01,
                                0.001,  0.001,  0.001]
 

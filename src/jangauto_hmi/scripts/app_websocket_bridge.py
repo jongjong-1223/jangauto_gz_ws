@@ -10,15 +10,23 @@
   기대하는 JSON을 이 노드가 직접 조립한 뒤 주기적으로(`app_status_publish_period_sec`)
   WebSocket으로 브로드캐스트한다 — ROS 토픽으로 재발행하지 않고 바로 WS로만
   나간다. 앱 JSON 스키마(필드 이름 등)에 대한 지식은 이 노드에만 있다.
-  명령별 개별 응답(ack)은 없음 — `/robot_status`의 `mode` 변화만으로 앱이
-  수락 여부를 판단한다(거부 사유 텍스트는 전달하지 않음).
-- **로봇→앱(아웃바운드, 지도)**: `/map`(nav_msgs/OccupancyGrid)을 구독해서
-  OpenCV로 점유 셀의 꼭짓점을 추출하고, 앱이 이미 파싱 가능한 `map_data`
-  메시지의 `anchors` 필드로 보낸다(실제 UWB 앵커가 아니라 지도 꼭짓점을
-  임시로 이 필드에 담은 것 — 나중에 필드명/구조를 바꿔야 함,
-  `APP_PROTOCOL_HANDSHAKE.md` §5 참고). 앱의 `MoveRequest` 등과 같은
-  msg_id+`AppAck` 신뢰성 프로토콜로 보내고, 응답 없으면 주기적으로
-  재전송한다(`map_data_retry_timeout_sec`/`map_data_max_retries`).
+  명령별 개별 응답(ack)은 없음 — `/robot_status`의 `mode`(WS로는
+  `current_state`) 변화만으로 앱이 수락 여부를 판단한다(거부 사유 텍스트는
+  전달하지 않음).
+- **로봇→앱(아웃바운드, 지도)**: `/global_costmap/costmap`(nav_msgs/OccupancyGrid —
+  정적 `/map`+뎁스카메라 장애물+inflation이 합쳐진 Nav2 global costmap)을
+  구독해서 `map_data` 메시지 하나로 두 가지를 같이 보낸다 — `map`(그리드 전체
+  4개 모서리 좌표, 점유 여부와 무관한 순수 경계)과 `obstacles`(점유 셀
+  컨투어를 OpenCV로 추출해 컨투어별로 묶은 꼭짓점 리스트의 리스트,
+  `List<List<Point>>` — `map_occupied_threshold`(기본 99)로 진짜 장애물+
+  inscribed radius 경계까지만 잡고, 순수 inflation 그라디언트는 제외).
+  앱의 `MoveRequest` 등과 같은 msg_id+`AppAck` 신뢰성 프로토콜로 보내고,
+  응답 없으면 주기적으로 재전송한다(`map_data_retry_timeout_sec`/
+  `map_data_max_retries`). 내용이 안 바뀌면 새 msg_id로는 안 나가지만,
+  마지막으로 보낸 JSON은 캐싱해뒀다가 신규 클라이언트 접속 시 즉시,
+  그리고 `map_data_keepalive_period_sec`마다 저주파수로 재방송한다 —
+  그 순간 접속이 없었거나 메시지를 놓친 클라이언트도 결국 지도를 받게
+  하기 위함.
 - **앱→로봇(아웃바운드 아님, MoveRequest)**: `/app/command`에 `command=="move"`가
   오면(다른 커맨드는 여전히 무시) 이 노드가 직접 판단한다 — CAL을 한 번이라도
   완료했고(`/jangauto_mission/calibration_complete`) 현재 KEY/CAL 모드일 때만
@@ -83,12 +91,13 @@ from zeroconf import Zeroconf, ServiceInfo
 CONTROL_STATE_KEYS = {'sw_bits', 'key_bits', 'speed_bits', 'video_bit', 'safe_bit'}
 
 # 앱용 JSON을 조립하려고 구독하는 ROS 내부 소스들 — mission_state_machine.py(상태
-# 판단), jangauto_perception(로컬라이제이션), jangauto_uwb_driver(지도)가 각자
-# 발행하는 타입드 토픽이다.
+# 판단), jangauto_perception(로컬라이제이션)이 각자 발행하는 타입드 토픽과,
+# jangauto_uwb_driver(/map)+뎁스카메라 장애물이 합쳐진 nav2 global costmap이다.
 ROBOT_STATUS_TOPIC = '/robot_status'          # mode/in_error/error_reason (jangauto_msg/Status)
 ODOMETRY_GLOBAL_TOPIC = '/odometry/global'    # GPS+IMU 전역 EKF(map 프레임) — 위치(tag_x/y/ori) 출처
 ODOMETRY_LOCAL_TOPIC = '/odom'                # IMU 로컬 EKF(odom 프레임) — 속도(tag_vel/yaw_rate) 출처
-MAP_TOPIC = '/map'                            # OccupancyGrid — map_data(anchors) 꼭짓점 추출 출처
+MAP_TOPIC = '/global_costmap/costmap'         # OccupancyGrid — 정적 /map+뎁스카메라 장애물+
+                                               # inflation이 합쳐진 Nav2 global costmap, map_data(map/obstacles) 추출 출처
 CALIBRATION_COMPLETE_TOPIC = '/jangauto_mission/calibration_complete'  # MoveRequest 수락 조건
 CMD_VEL_MANUAL_TOPIC = 'cmd_vel_manual'       # 조이스틱 출력 — 값이 오면 진행 중인 move goal 취소
 
@@ -116,16 +125,23 @@ def _quaternion_to_yaw(q) -> float:
     return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
 
-def _extract_map_points(msg: OccupancyGrid, occupied_threshold: int) -> list:
-    """OccupancyGrid -> 점유 셀 꼭짓점 평평한 리스트([{'x':..,'y':..}, ...]).
+def _extract_obstacle_contours(msg: OccupancyGrid, occupied_threshold: int) -> list:
+    """OccupancyGrid -> 점유 셀 컨투어별 꼭짓점 리스트의 리스트
+    ([[{'x':..,'y':..}, ...], ...]) — `map_data`의 `obstacles` 필드용.
 
     - occupied_threshold 이상인 셀만 255로 이진화한 뒤, 1px 제로 패딩을 씌워서
       cv2.findContours에 넘긴다 — 지도 경계처럼 이미지 가장자리에 붙는 도형이
       패딩 없이는 잘려서 컨투어가 안 잡히는 OpenCV의 흔한 함정을 피하기 위함.
-    - RETR_EXTERNAL: 바깥 윤곽선만(내부 구멍은 이번 범위 밖). approxPolyDP로
+    - RETR_CCOMP + `hierarchy[i][3] == -1` 필터로 최상위(부모 없는) 컨투어만
+      골라낸다 — 실측 확인된 RETR_EXTERNAL의 함정: 테두리(링) 모양처럼 구멍이
+      있는 도형의 그 구멍 안에 별개로 떨어져 있는 장애물(예: 지도 테두리
+      안쪽의 독립된 박스)을, 위상적으로는 둘 다 최상위 외곽선인데도
+      RETR_EXTERNAL이 누락시키는 경우가 있다(OpenCV의 알려진 동작). approxPolyDP로
       각 컨투어의 꼭짓점 개수를 줄인다.
     - origin이 무회전이라고 가정(현재 이 프로젝트의 모든 OccupancyGrid 발행자가
       만족하는 조건)하고 셀 중심 좌표를 world 좌표(m)로 변환한다.
+    - 컨투어(=개별 장애물)마다 꼭짓점 리스트를 따로 유지한다 — 앱이 각 장애물을
+      연결된 선(폴리곤)으로 그릴 수 있어야 하므로 여기서 평탄화하지 않는다.
     """
     width = msg.info.width
     height = msg.info.height
@@ -136,16 +152,19 @@ def _extract_map_points(msg: OccupancyGrid, occupied_threshold: int) -> list:
     binary = np.where(grid >= occupied_threshold, 255, 0).astype(np.uint8)
     padded = np.pad(binary, pad_width=1, mode='constant', constant_values=0)
 
-    contours, _ = cv2.findContours(padded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, hierarchy = cv2.findContours(padded, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
 
     resolution = msg.info.resolution
     origin_x = msg.info.origin.position.x
     origin_y = msg.info.origin.position.y
 
-    points = []
-    for contour in contours:
+    obstacles = []
+    for i, contour in enumerate(contours):
+        if hierarchy[0][i][3] != -1:
+            continue  # 부모가 있는 컨투어(구멍) — 최상위 외곽선만 취급
         epsilon = 0.02 * cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, epsilon, True)
+        points = []
         for pt in approx.reshape(-1, 2):
             col = int(pt[0]) - 1  # 패딩으로 밀린 만큼 되돌림
             row = int(pt[1]) - 1
@@ -153,7 +172,35 @@ def _extract_map_points(msg: OccupancyGrid, occupied_threshold: int) -> list:
                 'x': origin_x + (col + 0.5) * resolution,
                 'y': origin_y + (row + 0.5) * resolution,
             })
-    return points
+        obstacles.append(points)
+    return obstacles
+
+
+def _compute_map_boundary(msg: OccupancyGrid) -> list:
+    """OccupancyGrid -> 그리드 전체 경계의 4개 모서리 좌표
+    ([{'x':..,'y':..}, ...]) — `map_data`의 `map` 필드용.
+
+    점유 여부와 무관하게 `width`/`height`/`resolution`/`origin`만으로 계산하는
+    순수 기하 정보라, `occupied_threshold`나 셀 값 자체는 필요 없다.
+    origin이 무회전이라고 가정(다른 OccupancyGrid 발행자와 동일한 전제).
+    """
+    width = msg.info.width
+    height = msg.info.height
+    if width == 0 or height == 0:
+        return []
+
+    resolution = msg.info.resolution
+    origin_x = msg.info.origin.position.x
+    origin_y = msg.info.origin.position.y
+    far_x = origin_x + width * resolution
+    far_y = origin_y + height * resolution
+
+    return [
+        {'x': origin_x, 'y': origin_y},
+        {'x': far_x, 'y': origin_y},
+        {'x': far_x, 'y': far_y},
+        {'x': origin_x, 'y': far_y},
+    ]
 
 
 def _detect_local_ip():
@@ -193,7 +240,8 @@ class AppWebSocketBridge(Node):
         self.declare_parameter('map_data_retry_timeout_sec', 1.0)
         self.declare_parameter('map_data_max_retries', 3)
         self.declare_parameter('map_data_retry_check_period_sec', 0.2)
-        self.declare_parameter('map_occupied_threshold', 50)
+        self.declare_parameter('map_data_keepalive_period_sec', 5.0)
+        self.declare_parameter('map_occupied_threshold', 99)
 
         self.host = self.get_parameter('host').get_parameter_value().string_value
         self.port = self.get_parameter('port').get_parameter_value().integer_value
@@ -209,6 +257,8 @@ class AppWebSocketBridge(Node):
             'map_data_max_retries').get_parameter_value().integer_value
         self.map_data_retry_check_period_sec = self.get_parameter(
             'map_data_retry_check_period_sec').get_parameter_value().double_value
+        self.map_data_keepalive_period_sec = self.get_parameter(
+            'map_data_keepalive_period_sec').get_parameter_value().double_value
         self.map_occupied_threshold = self.get_parameter(
             'map_occupied_threshold').get_parameter_value().integer_value
 
@@ -234,11 +284,15 @@ class AppWebSocketBridge(Node):
         self._last_global_odom_monotonic = None
         self._last_local_odom_monotonic = None
 
-        # map_data(anchors) 신뢰성 전송 상태 — 앱의 MoveRequest 재전송 패턴과 동일하게
-        # msg_id 하나를 pending으로 추적하다가 app_ack를 받으면 해제한다.
-        self._last_sent_map_points = None
+        # map_data(map+obstacles) 신뢰성 전송 상태 — 앱의 MoveRequest 재전송 패턴과
+        # 동일하게 msg_id 하나를 pending으로 추적하다가 app_ack를 받으면 해제한다.
+        self._last_sent_map_payload = None  # (map 경계, obstacles 컨투어 리스트) 튜플
         self._pending_map_data = None  # {'msg_id','json','retry_count','last_sent_monotonic'}
         self._map_data_last_delivery_failed = False
+        # 마지막으로 조립된 map_data JSON 문자열 — 신규 클라이언트 접속 시 즉시 전송,
+        # 그리고 내용이 안 바뀌어도 map_data_keepalive_period_sec마다 재방송하는 데
+        # 쓴다(둘 다 "그 순간 못 받은 클라이언트는 다시는 지도를 못 받는" 문제 방지).
+        self._last_map_data_json = None
 
         # mission_state_machine.py가 /robot_status를 RELIABLE+TRANSIENT_LOCAL(latched)로
         # 발행하므로 구독 쪽도 durability를 맞춰야 late-join 시 마지막 값을 실제로 받는다
@@ -292,6 +346,7 @@ class AppWebSocketBridge(Node):
         self.create_timer(self.heartbeat_period_sec, self._heartbeat_check)
         self.create_timer(self.app_status_publish_period_sec, self._publish_app_status_tick)
         self.create_timer(self.map_data_retry_check_period_sec, self._map_data_retry_check)
+        self.create_timer(self.map_data_keepalive_period_sec, self._map_data_keepalive_tick)
 
         self._diag_updater = diagnostic_updater.Updater(self)
         self._diag_updater.setHardwareID('app_websocket_bridge')
@@ -351,8 +406,10 @@ class AppWebSocketBridge(Node):
     async def _handle_client(self, websocket, path=None):
         """클라이언트 1명당 하나씩 실행되는 연결 수명주기 핸들러.
 
-        - 접속하면 클라이언트 집합에 등록하고, 캐시된 최신 상태가 있으면
-          바로 한 번 보내준다(늦게 접속해도 현재 상태를 즉시 알 수 있게).
+        - 접속하면 클라이언트 집합에 등록하고, 캐시된 최신 상태/지도가 있으면
+          바로 한 번씩 보내준다(늦게 접속해도 현재 상태·지도를 즉시 알 수 있게 —
+          지도 쪽은 `map_data_keepalive_period_sec` 주기 재방송을 기다릴
+          필요 없이 접속 즉시 받게 하기 위함).
         - 이후 들어오는 메시지마다 `_on_message`로 넘긴다.
         - 어떤 예외가 나든(연결 끊김 포함) 다른 클라이언트에 영향 없이
           이 커넥션만 정리하고 끝낸다.
@@ -366,6 +423,11 @@ class AppWebSocketBridge(Node):
                 await websocket.send(self._last_app_status_json)
             except Exception as e:
                 self.get_logger().warn(f'[AppWsBridge] Failed to send initial status to {peer}: {e}')
+        if self._last_map_data_json is not None:
+            try:
+                await websocket.send(self._last_map_data_json)
+            except Exception as e:
+                self.get_logger().warn(f'[AppWsBridge] Failed to send initial map_data to {peer}: {e}')
         try:
             async for message in websocket:
                 self._on_message(message, peer)
@@ -437,21 +499,27 @@ class AppWebSocketBridge(Node):
 
     # -------------------------------------------------------------- map_data
     def _on_map(self, msg: OccupancyGrid) -> None:
-        """`/map` 구독 콜백 — 점유 셀 꼭짓점을 추출해서, 직전에 보낸 것과
-        내용이 다르면(dedup) 새 `map_data` 메시지로 앱에 전송하고 신뢰성
-        전송 추적을 시작한다. 200x200 그리드라 매 틱(최대 10Hz) 추출해도
-        비용이 미미해서 캐싱 없이 콜백에서 바로 계산한다.
+        """`/global_costmap/costmap` 구독 콜백 — 그리드 경계(`map`)와 점유 셀
+        컨투어(`obstacles`)를 계산해서, 직전에 보낸 것과 내용이 다르면(dedup)
+        새 `map_data` 메시지로 앱에 전송하고 신뢰성 전송 추적을 시작한다.
+        내용이 안 바뀌어도 마지막 JSON은 `_last_map_data_json`에 캐싱해둬서
+        신규 접속 즉시 전송/주기 재방송(`_map_data_keepalive_tick`)이 쓴다.
+        200x200 그리드라 매 틱(최대 5Hz) 추출해도 비용이 미미해서 캐싱 없이
+        콜백에서 바로 계산한다.
         """
         self._last_map_msg_monotonic = time.monotonic()
-        points = _extract_map_points(msg, self.map_occupied_threshold)
+        boundary = _compute_map_boundary(msg)
+        obstacles = _extract_obstacle_contours(msg, self.map_occupied_threshold)
 
-        if points == self._last_sent_map_points:
+        payload_key = (boundary, obstacles)
+        if payload_key == self._last_sent_map_payload:
             return
-        self._last_sent_map_points = points
+        self._last_sent_map_payload = payload_key
 
         msg_id = uuid.uuid4().hex[:8]
-        payload = {'type': 'map_data', 'msg_id': msg_id, 'anchors': points}
+        payload = {'type': 'map_data', 'msg_id': msg_id, 'map': boundary, 'obstacles': obstacles}
         text = json.dumps(payload)
+        self._last_map_data_json = text
 
         self._pending_map_data = {
             'msg_id': msg_id,
@@ -460,7 +528,8 @@ class AppWebSocketBridge(Node):
             'last_sent_monotonic': time.monotonic(),
         }
         self.get_logger().info(
-            f'[AppWsBridge] Sending map_data [ID: {msg_id}] with {len(points)} point(s)')
+            f'[AppWsBridge] Sending map_data [ID: {msg_id}] with {len(obstacles)} '
+            f'obstacle(s), {sum(len(o) for o in obstacles)} point(s)')
         self._broadcast_to_clients(text)
 
     def _on_app_ack(self, msg_id) -> None:
@@ -496,6 +565,17 @@ class AppWebSocketBridge(Node):
             f"[AppWsBridge] Retrying map_data [ID: {pending['msg_id']}] "
             f"({pending['retry_count']}/{self.map_data_max_retries})")
         self._broadcast_to_clients(pending['json'])
+
+    def _map_data_keepalive_tick(self) -> None:
+        """저주파수 주기 타이머 — 지도 내용이 한동안 안 바뀌어도 마지막
+        map_data를 그대로 재방송한다. 그 순간 접속이 없었거나 메시지를
+        놓친 클라이언트가 다음 실제 지도 변경까지 기다리지 않고도 결국
+        지도를 받게 하기 위함. msg_id+ack 추적(`_pending_map_data`)은
+        건드리지 않는 별개 경로 — 그냥 캐시를 다시 내보낼 뿐이라, 앱이
+        예전 msg_id로 중복 app_ack를 보내도 `_on_app_ack`가 조용히 무시한다."""
+        if self._last_map_data_json is None:
+            return
+        self._broadcast_to_clients(self._last_map_data_json)
 
     # -------------------------------------------------------------- move (MoveRequest)
     def _on_calibration_complete(self, msg: Bool) -> None:
@@ -594,7 +674,7 @@ class AppWebSocketBridge(Node):
             return  # /robot_status를 아직 한 번도 못 받음(부팅 직후) — 보낼 게 없음
 
         payload = {
-            'mode': status.mode,
+            'current_state': status.mode,
             'in_error': status.in_error,
             'error_reason': status.error_reason,
         }
@@ -677,7 +757,8 @@ class AppWebSocketBridge(Node):
         return stat
 
     def _map_diag_callback(self, stat):
-        return self._staleness_diag(stat, self._last_map_msg_monotonic, MAP_STALE_TIMEOUT_SEC, '/map')
+        return self._staleness_diag(
+            stat, self._last_map_msg_monotonic, MAP_STALE_TIMEOUT_SEC, '/global_costmap/costmap')
 
     def _robot_status_diag_callback(self, stat):
         return self._staleness_diag(

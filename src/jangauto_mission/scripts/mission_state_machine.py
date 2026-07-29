@@ -5,6 +5,9 @@
 - `/app/control_state`(앱 명령) 구독 → STOP/KEY/CAL/ALIGN/RUN 중 모드 결정.
   전이 가능 여부는 `ALLOWED_TARGETS` 규칙을 따른다(내려가는 전이는 항상 자유).
 - `/jangauto_mission/error`(내부 에러) 구독 → 보고되면 규칙 무시하고 즉시 STOP.
+- **in_error는 한 번 켜지면 영구 래치** — 진단이 회복되거나 앱이 어떤 명령을
+  보내도 소프트웨어적으로 안 풀린다(물리 E-stop 리셋과 동일한 개념). 실제
+  복구는 원인을 고치고 이 노드를 재시작해야만 가능.
 - 명령 타임아웃 시에도 STOP(침묵을 위험 신호로 보는 fail-safe).
 - 결정된 모드를 `/robot_status`(jangauto_msg/Status)로 발행 — 전이 시 즉시 1회 +
   `status_publish_period_sec` 주기로 재발행(변화 없어도 계속 나감). 앱에 보여줄 JSON
@@ -241,6 +244,15 @@ class ControlAndErrorMonitor:
                         return "TIMEOUT"
                     continue
 
+                if self._last_in_error:
+                    # in_error는 한 번 켜지면 이 프로세스가 살아있는 동안 영구
+                    # 래치다 — 진단이 회복돼 "Cleared"가 와도, 앱이 어떤
+                    # control_state를 보내도 여기서 전부 무시하고 계속 STOP에
+                    # 머무른다. 실제 복구는 원인을 고치고 mission_state_machine
+                    # 노드를 재시작해야만 가능(물리 E-stop을 리셋하는 것과 동일한
+                    # 개념 — 소프트웨어적으로 조용히 풀리면 안 되는 안전 요구사항).
+                    continue
+
                 if kind == "action_done":
                     success = data
                     if success:
@@ -253,7 +265,9 @@ class ControlAndErrorMonitor:
                     if data:
                         self._publish_status("STOP", True, data)
                         return "ERROR"
-                    self._last_in_error = False
+                    # data가 빈 문자열(진단 회복)이어도 위의 영구 래치 방침상
+                    # in_error를 되돌리지 않는다 — 이 분기는 in_error가 아직
+                    # 한 번도 안 켜졌을 때만 의미 있는 no-op.
                     continue
 
                 # kind == "control": 앱 명령 해석

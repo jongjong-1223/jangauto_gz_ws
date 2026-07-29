@@ -36,7 +36,10 @@ class MissionDiagnosticsMonitor(Node):
         super().__init__('mission_diagnostics_monitor')
 
         self.declare_parameter('included_groups', ['GPS'])
-        self.declare_parameter('min_level_to_stop', DiagnosticStatus.ERROR)
+        # DiagnosticStatus.ERROR는 생성 코드상 bytes(b'\x02') 타입이라 declare_parameter의
+        # 타입 추론에 안 맞아 TypeError로 죽는다 — 단일 바이트를 인덱싱하면 파이썬3에서
+        # 바로 int가 나오므로(int(b'\x02')처럼 10진 문자열로 파싱 시도하면 오히려 에러) 이 방식으로 캐스팅.
+        self.declare_parameter('min_level_to_stop', DiagnosticStatus.ERROR[0])
 
         self._included_groups = self.get_parameter(
             'included_groups').get_parameter_value().string_array_value
@@ -55,10 +58,13 @@ class MissionDiagnosticsMonitor(Node):
 
     def _on_diagnostics_agg(self, msg: DiagnosticArray) -> None:
         """`diagnostic_analyzers.yaml`의 `contains` 매칭과 같은 방식(부분 문자열
-        매칭)으로 관심 그룹에 속하면서 임계 레벨 이상인 status를 골라낸다."""
+        매칭)으로 관심 그룹에 속하면서 임계 레벨 이상인 status를 골라낸다.
+        `status.level`은 ROS `byte` 타입이라 파이썬에서 길이 1 `bytes`로
+        들어오므로, 정수인 `self._min_level_to_stop`과 비교하려면 인덱싱해서
+        int로 꺼내야 한다."""
         offending = [
             status for status in msg.status
-            if status.level >= self._min_level_to_stop
+            if status.level[0] >= self._min_level_to_stop
             and any(group in status.name for group in self._included_groups)
         ]
 

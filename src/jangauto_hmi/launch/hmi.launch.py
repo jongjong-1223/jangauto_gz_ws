@@ -38,9 +38,15 @@ def generate_launch_description():
     map_data_retry_check_period_arg = DeclareLaunchArgument(
         'map_data_retry_check_period_sec', default_value='0.2',
         description='Polling period for checking whether a pending map_data delivery has timed out.')
+    map_data_keepalive_period_arg = DeclareLaunchArgument(
+        'map_data_keepalive_period_sec', default_value='5.0',
+        description='Low-frequency period for re-broadcasting the last map_data even when unchanged, so a '
+                    'client that missed the one-off change-triggered send (or connects later) still gets it.')
     map_occupied_threshold_arg = DeclareLaunchArgument(
-        'map_occupied_threshold', default_value='50',
-        description='Minimum OccupancyGrid cell value treated as occupied when extracting map_data vertices.')
+        'map_occupied_threshold', default_value='99',
+        description='Minimum OccupancyGrid cell value treated as occupied when extracting map_data vertices '
+                    '(from /global_costmap/costmap: 99=lethal+inscribed-radius cells, excludes the softer '
+                    'inflation gradient below that).')
 
     app_websocket_bridge_node = Node(
         package='jangauto_hmi',
@@ -58,6 +64,7 @@ def generate_launch_description():
             'map_data_retry_timeout_sec': LaunchConfiguration('map_data_retry_timeout_sec'),
             'map_data_max_retries': LaunchConfiguration('map_data_max_retries'),
             'map_data_retry_check_period_sec': LaunchConfiguration('map_data_retry_check_period_sec'),
+            'map_data_keepalive_period_sec': LaunchConfiguration('map_data_keepalive_period_sec'),
             'map_occupied_threshold': LaunchConfiguration('map_occupied_threshold'),
         }],
     )
@@ -73,6 +80,7 @@ def generate_launch_description():
         map_data_retry_timeout_arg,
         map_data_max_retries_arg,
         map_data_retry_check_period_arg,
+        map_data_keepalive_period_arg,
         map_occupied_threshold_arg,
         app_websocket_bridge_node,
     ])

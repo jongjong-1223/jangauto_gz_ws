@@ -26,15 +26,23 @@
     (사용할 기본 BT XML은 `default_nav_to_pose_bt_xml`/
     `default_nav_through_poses_bt_xml`로 주입)
   - `waypoint_follower`: 다중 목표점 순회
-  - `velocity_smoother`: 최종 속도 명령을 부드럽게 다듬어 로봇 베이스로 전달
+  - `velocity_smoother`: 속도 명령을 가감속 한계 안에서 부드럽게 다듬음
   - `collision_monitor`: 근접 장애물 감지 시 속도 제한/정지
   - `docking_server`: 자동 도킹
 - `controller_server`/`behavior_server`는 내부적으로 `cmd_vel` 토픽에 속도를
-  내는데, 이를 `cmd_vel_nav`로 remap한다. `velocity_smoother`는 반대로
-  자신의 입력 `cmd_vel`을 `cmd_vel_nav`로 remap해서(둘을 같은 이름으로 맞춰서)
-  그 값을 받아 스무딩한 뒤, remap 없는 최종 `cmd_vel`로 발행한다 — 즉
-  `controller_server`/`behavior_server` -> `cmd_vel_nav` -> `velocity_smoother`
-  -> `cmd_vel`(로봇 베이스행) 순서의 파이프라인을 remap만으로 구성한 것.
+  내는데, 이를 `cmd_vel_nav`로 remap한다. `velocity_smoother`는 자신의 입력
+  `cmd_vel`을 `cmd_vel_nav`로 remap해서 이 값을 받아 스무딩한 뒤, 노드 자체에
+  고정된 출력 토픽 `cmd_vel_smoothed`로 발행한다(이건 remap이 아니라
+  `nav2_velocity_smoother` 코드가 입력과 다른 이름으로 발행하도록 만들어져
+  있는 것). `collision_monitor`는 이 `cmd_vel_smoothed`를 `cmd_vel_in_topic`
+  파라미터(`nav2_params.yaml`)로 구독해서 근접 충돌 예측 시 감속시킨 뒤,
+  `cmd_vel_out_topic` 파라미터로 지정된 `cmd_vel_nav_out`을 최종 발행한다 —
+  즉 `controller_server`/`behavior_server` -> `cmd_vel_nav` ->
+  `velocity_smoother` -> `cmd_vel_smoothed` -> `collision_monitor` ->
+  `cmd_vel_nav_out` 순서의 파이프라인이다. 로봇 베이스로 바로 가는 게 아니라
+  `cmd_vel_nav_out`이 `cmd_vel_arbiter.py`(jangauto_control)가 구독하는
+  소스 중 하나로 들어가서, 거기서 다른 소스(수동조작/안전정지)와 중재된
+  뒤에야 로봇 베이스행 `cmd_vel_out`이 된다.
 - `use_composition`에 따라 실행 방식이 갈린다:
   - False -> 각 서버를 독립 프로세스(`Node`)로 실행(`load_nodes`).
   - True  -> `container_name` 컨테이너에 컴포저블 노드로 로드
