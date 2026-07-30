@@ -1,11 +1,16 @@
 """GPS+IMU 센서 퓨전 로컬라이제이션 launch 파일.
 
-4단계 파이프라인을 구성한다:
+5단계 파이프라인을 구성한다:
+- IMU yaw 보정: 원본 `/imu`를 CAL이 계산한 offset만큼 회전시켜
+  `/imu_calibrated`로 재발행(EKF들의 실제 imu0 입력).
 - cmd_vel LPF: `cmd_vel_out`(명령 속도)을 저역통과 필터링해 로컬 EKF의
   선속도(Vx) pseudo-measurement로 변환(바퀴 엔코더 등 실제 속도 센서 없음).
 - 로컬 EKF: IMU+위 pseudo-velocity를 융합해 부드럽지만 드리프트가 있는
   `odom` 프레임 추정.
-- NavSat Transform: GPS 위경도를 EKF가 쓸 수 있는 좌표계로 변환.
+- NavSat Transform: GPS 위경도를 EKF가 쓸 수 있는 좌표계로 변환(IMU
+  입력은 원본 `/imu` 그대로 — 최초 GPS fix 때 좌표계 정렬을 한 번만
+  고정하는 특성상 뒤늦은 yaw 보정을 반영 못하므로 이 노드는 의도적으로
+  보정 전 토픽을 그대로 씀, `imu_yaw_corrector.py` 참고).
 - 글로벌 EKF: GPS+IMU를 융합해 드리프트 없는 `map` 프레임 추정.
 
 EKF 두 노드는 같은 `ekf.yaml` 설정 파일을 공유하되, remapping으로 입출력
@@ -21,6 +26,16 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     pkg_project_perception = get_package_share_directory('jangauto_perception')
+
+    # 5-0. IMU yaw 보정: 원본 /imu를 CAL이 계산한 offset만큼 회전시켜
+    # /imu_calibrated로 재발행합니다(EKF들이 실제로 구독하는 토픽).
+    imu_yaw_corrector_node = Node(
+        package='jangauto_perception',
+        executable='imu_yaw_corrector.py',
+        name='imu_yaw_corrector',
+        output='screen',
+        parameters=[{'use_sim_time': True}],
+    )
 
     # 6-0. cmd_vel LPF: cmd_vel_out(명령 속도)을 필터링해 ekf_local의 twist0
     # 입력(pseudo-velocity)으로 변환합니다.
@@ -75,6 +90,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        imu_yaw_corrector_node,
         cmd_vel_twist_lpf_node,
         ekf_local_node,
         ekf_global_node,

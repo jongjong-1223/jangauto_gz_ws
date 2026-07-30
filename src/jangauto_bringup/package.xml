@@ -13,7 +13,6 @@
 
   <depend>ros_gz</depend>
   <depend>sdformat_urdf</depend>
-  <depend>jangauto_application</depend>
   <depend>jangauto_description</depend>
   <depend>jangauto_gazebo</depend>
   <depend>jangauto_gps_driver</depend>

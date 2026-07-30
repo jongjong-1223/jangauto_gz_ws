@@ -14,13 +14,18 @@
 - 결정된 모드를 `/robot_status`(jangauto_msg/Status)로 발행 — 전이 시 즉시 1회 +
   `status_publish_period_sec` 주기로 재발행(변화 없어도 계속 나감). 앱에 보여줄 JSON
   조립·명령별 개별 응답(ack)은 이제 이 노드의 책임이 아니다 — `app_websocket_bridge.py`가
-  `/robot_status`를 구독해서 직접 조립해 앱에 보낸다(ack 없이 이 토픽의 `mode` 변화만으로
-  앱이 수락 여부를 판단).
-- CAL/ALIGN/RUN은 상태 진입 시 액션 서버(`calibrate`/`align`/`run`, 현재 TODO
-  placeholder)에 goal을 보내고, 결과도 앱 명령/에러와 같은 큐에 합류시켜 먼저
-  끝나는 쪽으로 outcome 결정(`STATE_ACTIONS`, `wait_for_outcome()`). YASMIN
-  `Concurrence`는 "모든 자식 완료 후 조합이 매칭돼야 하는" AND 방식이라 이
-  fan-in 용도에 안 맞아, 기존 `ControlAndErrorMonitor` 큐 방식을 그대로 확장해 씀.
+  `/robot_status`를 구독해서 직접 조립해 앱에 보낸다(ack 없이 이 토픽의 `current_state`
+  변화만으로 앱이 수락 여부를 판단).
+- CAL/ALIGN/RUN은 상태 진입 시 액션 서버(`calibrate`/`align`/`run` — CAL은
+  구현됨, ALIGN/RUN은 현재 TODO placeholder)에 goal을 보내고, 결과도 앱 명령/
+  에러와 같은 큐에 합류시켜 먼저 끝나는 쪽으로 outcome 결정(`STATE_ACTIONS`,
+  `wait_for_outcome()`). YASMIN `Concurrence`는 "모든 자식 완료 후 조합이
+  매칭돼야 하는" AND 방식이라 이 fan-in 용도에 안 맞아, 기존
+  `ControlAndErrorMonitor` 큐 방식을 그대로 확장해 씀.
+- CAL 액션 성공으로 인한 self-loop(자기 자신에 재전이)는 다음 진입 때
+  goal의 `self_loop` 필드로 액션 서버에 알려진다 — 액션 서버는 이걸로
+  "방금 성공해서 자동으로 다시 들어온 것"과 "다른 상태에 있다가 재진입한
+  것"을 구분해 전자는 재측정 없이 대기만 한다.
 
 ## 클래스 구성
 - `ControlAndErrorMonitor`: 앱 명령/내부 에러/액션 결과 세 이벤트를 판단해
@@ -80,9 +85,9 @@ ALLOWED_TARGETS = {
 }
 
 # CAL/ALIGN/RUN처럼 실제 작업이 있는 상태 -> (액션 타입, 액션 이름).
-# 나머지(STOP/KEY)는 감시만 한다. 액션 서버(calibration_action_server.py/
-# align_action_server.py/run_action_server.py)는 현재 TODO placeholder
-# (즉시 성공 리턴) — 실제 알고리즘은 미정.
+# 나머지(STOP/KEY)는 감시만 한다. CAL은 calibration_action_server.py가
+# GPS-IMU 비교로 실제 캘리브레이션을 수행하고, ALIGN/RUN은 아직 TODO
+# placeholder(즉시 성공 리턴) — 실제 알고리즘은 미정.
 STATE_ACTIONS = {
     "CAL": (Calibrate, "calibrate"),
     "ALIGN": (Align, "align"),
@@ -122,11 +127,17 @@ class ControlAndErrorMonitor:
         # 부팅 직후부터 바로 "STOP"을 흘려보낸다(앱이 로봇 생존 여부를
         # `/robot_status` 수신만으로 판단하므로, 첫 이벤트 전까지 토픽이
         # 완전히 비어있으면 안 됨).
-        self._last_mode = "STOP"
+        self._last_current_state = "STOP"
         self._last_in_error = False
         self._last_error_reason = ""
         # 액션 이름 -> ActionClient. 상태 진입마다 새로 만들지 않고 재사용.
         self._action_clients: dict = {}
+        # 방금 액션 성공으로 self-loop 전이(APP_TO_<자기자신>)를 만든 상태
+        # 이름 — wait_for_outcome() 다음 호출 진입 시 이걸 자기 이름과
+        # 비교해 "이번 진입이 self-loop인지"를 판별하는 데 쓰고 바로
+        # 초기화한다(딱 다음 한 번만 반영). CAL이 self-loop과 외부 재진입을
+        # 구분해 goal에 실어 보내는 데 사용(다른 상태는 아직 구분 안 함).
+        self._last_action_success_state = None
 
         self._control_sub = self._node.create_subscription(
             String, CONTROL_STATE_TOPIC, self._on_control, 10)
@@ -141,25 +152,26 @@ class ControlAndErrorMonitor:
         """error 구독 콜백 — 마찬가지로 큐에 적재만 한다."""
         self._queue.put(("error", msg.data))
 
-    def _publish_status(self, mode: str, in_error: bool, error_reason: str) -> None:
+    def _publish_status(self, current_state: str, in_error: bool, error_reason: str) -> None:
         """`/robot_status` 발행 — 상태 전이를 알리는 즉시 경로.
 
-        - 직전과 (mode, in_error)가 같으면 재발행하지 않는다(전이 시에만 반응하는
-          ROS 내부 소비자를 위한 경로 — 값이 같으면 이벤트가 아니므로 스킵).
+        - 직전과 (current_state, in_error)가 같으면 재발행하지 않는다(전이
+          시에만 반응하는 ROS 내부 소비자를 위한 경로 — 값이 같으면 이벤트가
+          아니므로 스킵).
         - ERROR처럼 앱 명령이 원인이 아닌 전이도 포함.
         - 이 뒤 앱에 보여줄 JSON 조립은 하지 않는다 — app_websocket_bridge.py가
           `/robot_status`를 직접 구독해서 처리한다.
         """
-        if mode == self._last_mode and in_error == self._last_in_error:
+        if current_state == self._last_current_state and in_error == self._last_in_error:
             return
         status = Status()
         status.header.stamp = self._node.get_clock().now().to_msg()
-        status.mode = mode
+        status.current_state = current_state
         status.in_error = in_error
         status.error_reason = error_reason if in_error else ""
         self._status_pub.publish(status)
 
-        self._last_mode = mode
+        self._last_current_state = current_state
         self._last_in_error = in_error
         self._last_error_reason = status.error_reason
 
@@ -168,12 +180,12 @@ class ControlAndErrorMonitor:
         재발행한다. ack가 없어진 지금, 앱이 명령 수락/거부를 알 수 있는 유일한
         통로가 `/robot_status`(를 구독하는 app_websocket_bridge.py)이므로, 상태가
         안 바뀌어도 계속 흘려보내야 늦게 붙는 구독자·앱이 최신 값을 놓치지 않는다.
-        `_last_mode`가 생성자에서 이미 "STOP"으로 초기화돼있어 부팅 직후
-        첫 틱부터 바로 발행된다.
+        `_last_current_state`가 생성자에서 이미 "STOP"으로 초기화돼있어 부팅
+        직후 첫 틱부터 바로 발행된다.
         """
         status = Status()
         status.header.stamp = self._node.get_clock().now().to_msg()
-        status.mode = self._last_mode
+        status.current_state = self._last_current_state
         status.in_error = self._last_in_error
         status.error_reason = self._last_error_reason
         self._status_pub.publish(status)
@@ -202,6 +214,12 @@ class ControlAndErrorMonitor:
             (거부된 요청·명령 부재는 outcome 없이 계속 대기 — 앱은 선택
             장비라 침묵을 에러로 취급하지 않는다)
         """
+        # 이번 진입이 self-loop(방금 이 상태 자신의 액션 성공으로 자기
+        # 자신에 재전이한 경우)인지 판별 — 딱 이번 호출에만 반영되도록
+        # 바로 초기화한다.
+        is_self_loop = (self._last_action_success_state == current_state_name)
+        self._last_action_success_state = None
+
         # 액션이 있으면 진입과 동시에 goal 전송, 결과를 같은 큐로 흘려보낸다.
         # still_relevant: 이 호출 종료 후 뒤늦게 도착하는 결과가 다음 호출의
         # 큐 소비 로직을 오염시키지 않도록 막는 가드.
@@ -232,7 +250,14 @@ class ControlAndErrorMonitor:
 
                     result_future.add_done_callback(_on_result)
 
-                client.send_goal_async(action_type.Goal()).add_done_callback(_on_goal_response)
+                # CAL은 self-loop(대기만)와 외부 재진입(실제 캘리브레이션)을
+                # 구분해야 해서 goal에 그 판단을 실어 보낸다 — 다른 액션
+                # 타입은 아직 이 구분이 필요 없어 빈 Goal() 그대로.
+                if action_type is Calibrate:
+                    goal = Calibrate.Goal(self_loop=is_self_loop)
+                else:
+                    goal = action_type.Goal()
+                client.send_goal_async(goal).add_done_callback(_on_goal_response)
 
         try:
             while True:
@@ -253,6 +278,7 @@ class ControlAndErrorMonitor:
                     success = data
                     if success:
                         self._publish_status(current_state_name, False, "")
+                        self._last_action_success_state = current_state_name
                         return f"APP_TO_{current_state_name}"
                     self._publish_status("STOP", True, f"{current_state_name} action failed")
                     return "ERROR"
@@ -278,9 +304,16 @@ class ControlAndErrorMonitor:
                     self._node.get_logger().warning(f"Unknown sw_bits value: {sw_bits!r}")
                     continue
 
+                if target == current_state_name:
+                    # 이미 이 상태인데 같은 목표로 재요청(앱이 하트비트로 현재
+                    # sw_bits를 계속 재전송하는 정상 상황 포함) — 진짜 no-op.
+                    # 이걸 전이로 취급해 재진입시키면 CAL처럼 액션이 걸린
+                    # 상태에서는 진행 중인 액션이 매번 취소·재시작돼버린다.
+                    continue
+
                 if target not in ALLOWED_TARGETS[current_state_name]:
                     # 순서 규칙 위반 — 전이 없이 그냥 무시하고 계속 대기(개별
-                    # 응답 채널 없음 — 앱은 /robot_status의 mode가 안 바뀌는 것으로 판단).
+                    # 응답 채널 없음 — 앱은 /robot_status의 current_state가 안 바뀌는 것으로 판단).
                     continue
 
                 self._publish_status(target, False, "")

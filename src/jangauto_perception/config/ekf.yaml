@@ -16,8 +16,9 @@ ekf_local:
     base_link_frame: base_link    # Robot center frame
     world_frame: odom             # Target frame for this filter (odom -> base_link)
 
-    # Sensor Input (IMU)
-    imu0: imu                     # Topic name
+    # Sensor Input (IMU) — imu_yaw_corrector.py가 CAL이 계산한 yaw offset을
+    # 반영해 재발행하는 토픽(원본 /imu 아님, imu_yaw_corrector.py 참고).
+    imu0: imu_calibrated          # Topic name
 
     # imu0_config: Determines which values to use.
     # Format: 
@@ -115,7 +116,8 @@ ekf_global:
     odom0_differential: false
     odom0_relative: false
 
-    imu0: /imu
+    # ekf_local과 동일한 이유로 원본 /imu가 아닌 보정된 토픽 사용.
+    imu0: /imu_calibrated
     imu0_config: [false, false, false,
                   true,  true,  true,
                   false, false, false,

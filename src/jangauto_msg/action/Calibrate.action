@@ -1,8 +1,12 @@
 # CAL 상태 진입 시 mission_state_machine.py가 호출하는 캘리브레이션 액션.
-# 무엇을 캘리브레이션하는지(IMU 바이어스/GPS 기준점 등)는 아직 미정 —
-# 지금은 goal에 필드 없이 "캘리브레이션 시작"만 의미한다.
+# GPS 이동방향과 IMU yaw를 비교해 그 차이(imu_yaw_offset)를 구하는
+# 전진/후진 반복 주행을 수행한다.
 
-# goal (필드 없음 — 실제 대상이 정해지면 추가)
+# self_loop: 액션 성공 직후 YASMIN self-loop로 CAL에 곧바로 재진입하는
+# 경우 true — 이땐 다시 주행하지 않고 대기만 한다(mission_state_machine.py가
+# 판단해서 채워줌). 다른 상태에서 CAL로 (다시) 들어온 경우는 false —
+# 실제로 캘리브레이션을 새로 수행한다.
+bool self_loop
 ---
 # result
 bool success

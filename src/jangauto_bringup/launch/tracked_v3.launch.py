@@ -20,7 +20,6 @@
 - `gps`: 시뮬레이션 GPS의 `position_covariance`를 채워 재발행.
 - `uwb`: 실제 UWB 하드웨어 전까지 nav2 정적 맵(`/map`)을 가상 데이터로 채우는
   임시 노드(`jangauto_uwb_driver`).
-- `application`: 애플리케이션 계층 노드(현재 전부 비활성화, 위 패키지 참고).
 - `navigation2`: Nav2 내비게이션 서버 묶음(`navigation_launch.py`) —
   AMCL/SLAM 분기가 있는 `bringup_launch.py` 대신, GPS EKF 로컬라이제이션과
   충돌하지 않도록 서버들만 포함한 이 launch 파일을 직접 include한다.
@@ -44,7 +43,6 @@ def generate_launch_description():
     pkg_project_perception = get_package_share_directory('jangauto_perception')
     pkg_project_gps_driver = get_package_share_directory('jangauto_gps_driver')
     pkg_project_uwb_driver = get_package_share_directory('jangauto_uwb_driver')
-    pkg_project_application = get_package_share_directory('jangauto_application')
     pkg_project_navigation2 = get_package_share_directory('jangauto_navigation2')
     pkg_project_hmi = get_package_share_directory('jangauto_hmi')
     pkg_project_mission = get_package_share_directory('jangauto_mission')
@@ -81,11 +79,6 @@ def generate_launch_description():
     uwb = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(pkg_project_uwb_driver, 'launch', 'uwb.launch.py')),
-    )
-
-    application = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(pkg_project_application, 'launch', 'application.launch.py')),
     )
 
     # AMCL/SLAM 분기가 있는 bringup_launch.py 대신 navigation_launch.py만 include —
@@ -128,7 +121,6 @@ def generate_launch_description():
         localization,
         gps,
         uwb,
-        application,
         navigation2,
         hmi,
         mission,

@@ -16,18 +16,26 @@
   자율 이동보다 우선). `key_manual_driver.py`가 조이스틱을 안 건드릴 때는
   `cmd_vel_manual`을 아예 발행하지 않으므로, 그때는 자연히 `cmd_vel_nav_out`이
   통과한다.
+- CAL 모드도 소스가 2개(`calibration_action_server.py`의 전진/후진 캘리브레이션
+  주행 `cmd_vel_calibration` + MoveRequest용 `cmd_vel_nav_out`)다 — 캘리브레이션
+  주행 중이면 그게 우선. `cmd_vel_calibration`은 nav2 `collision_monitor`를
+  거치지 않는 열린루프 명령이라(CAL은 헤딩이 아직 안 맞은 상태라 closed-loop
+  경로추종을 쓸 수 없음) 안전 확보는 "사람이 안전한 공터로 옮겨놓고 실행"하는
+  운용으로 대신한다.
 
 ## 입력/출력
 - 구독: `cmd_vel_nav_out`(nav2 최종 출력 — RUN의 자율주행뿐 아니라 KEY/CAL에서
   MoveRequest로 실행 중인 목표 지점 이동도 여기로 나온다), `cmd_vel_manual`
-  (조이스틱 변환값, KEY 모드에서 조작 중일 때만 옴), `cmd_vel_stop`
-  (안전정지 트리거, 내용은 안 보고 수신 자체만 봄), `/robot_status`(현재 모드).
+  (조이스틱 변환값, KEY 모드에서 조작 중일 때만 옴), `cmd_vel_calibration`
+  (CAL 캘리브레이션 열린루프 주행, CAL 모드에서 실제 측정 중일 때만 옴),
+  `cmd_vel_stop`(안전정지 트리거, 내용은 안 보고 수신 자체만 봄),
+  `/robot_status`(현재 모드).
 - 발행: `cmd_vel_out` — `jangauto_bridge.yaml`이 이미 보고 있는 이름이라
   시뮬레이션 로봇까지 배선 그대로 이어진다.
 
 ## main()의 동작 순서
 1. rclpy 초기화
-2. `CmdVelArbiter` 노드 생성 — 이 시점에 4개 구독과 발행자, 타이머가 생성됨
+2. `CmdVelArbiter` 노드 생성 — 이 시점에 5개 구독과 발행자, 타이머가 생성됨
 3. `rclpy.spin()` — 타이머 주기(`ARBITRATION_RATE_HZ`)마다 `_arbitrate()`가
    최신 수신 상태를 보고 출력을 결정, Ctrl+C 전까지 계속 반복
 4. 종료 시 정리
@@ -47,7 +55,11 @@ from jangauto_msg.msg import Status
 MODE_TO_SOURCE_TOPICS = {
     "RUN": ["cmd_vel_nav_out"],
     "KEY": ["cmd_vel_manual", "cmd_vel_nav_out"],
-    "CAL": ["cmd_vel_nav_out"],
+    # cmd_vel_calibration: calibration_action_server.py가 CAL 전진/후진
+    # 캘리브레이션 주행에 쓰는 전용 열린루프 소스(collision_monitor 안
+    # 거침). cmd_vel_nav_out도 같이 허용 — CAL 모드에서도 MoveRequest로
+    # nav2 미세 이동이 가능해야 하므로. 캘리브레이션 동작이 우선.
+    "CAL": ["cmd_vel_calibration", "cmd_vel_nav_out"],
 }
 
 # 이 시간(초) 안에 메시지가 안 들어오면 그 소스는 "죽은 것"으로 간주 —
@@ -69,11 +81,12 @@ class CmdVelArbiter(Node):
         # 메시지 자체는 저장하지 않고 수신 시각만 추적한다.
         self._last_nav = (None, None)
         self._last_manual = (None, None)
+        self._last_calibration = (None, None)
         self._last_stop_monotonic = None
 
         # /robot_status가 아직 한 번도 안 왔을 때의 기본값 — 부팅 직후에도
         # 안전하도록 주행이 허용되지 않는 STOP으로 취급.
-        self._current_mode = "STOP"
+        self._current_state = "STOP"
 
         status_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -84,18 +97,22 @@ class CmdVelArbiter(Node):
         self.create_subscription(Status, '/robot_status', self._on_status, status_qos)
         self.create_subscription(Twist, 'cmd_vel_nav_out', self._on_nav, 10)
         self.create_subscription(Twist, 'cmd_vel_manual', self._on_manual, 10)
+        self.create_subscription(Twist, 'cmd_vel_calibration', self._on_calibration, 10)
         self.create_subscription(Twist, 'cmd_vel_stop', self._on_stop, 10)
 
         self.create_timer(1.0 / ARBITRATION_RATE_HZ, self._arbitrate)
 
     def _on_status(self, msg: Status) -> None:
-        self._current_mode = msg.mode
+        self._current_state = msg.current_state
 
     def _on_nav(self, msg: Twist) -> None:
         self._last_nav = (time.monotonic(), msg)
 
     def _on_manual(self, msg: Twist) -> None:
         self._last_manual = (time.monotonic(), msg)
+
+    def _on_calibration(self, msg: Twist) -> None:
+        self._last_calibration = (time.monotonic(), msg)
 
     def _on_stop(self, _msg: Twist) -> None:
         """내용은 보지 않고 수신 시각만 기록 — 이 토픽에 뭐가 오든 정지 트리거."""
@@ -124,8 +141,9 @@ class CmdVelArbiter(Node):
         source_by_topic = {
             'cmd_vel_nav_out': self._last_nav,
             'cmd_vel_manual': self._last_manual,
+            'cmd_vel_calibration': self._last_calibration,
         }
-        for source_topic in MODE_TO_SOURCE_TOPICS.get(self._current_mode, []):
+        for source_topic in MODE_TO_SOURCE_TOPICS.get(self._current_state, []):
             last_monotonic, msg = source_by_topic[source_topic]
             if self._is_recent(last_monotonic):
                 self._pub.publish(msg)

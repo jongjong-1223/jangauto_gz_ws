@@ -3,7 +3,6 @@ cmake_minimum_required(VERSION 3.5)
 project(jangauto_bringup)
 
 find_package(ament_cmake REQUIRED)
-find_package(jangauto_application REQUIRED)
 find_package(jangauto_description REQUIRED)
 find_package(jangauto_gazebo REQUIRED)
 find_package(jangauto_gps_driver REQUIRED)

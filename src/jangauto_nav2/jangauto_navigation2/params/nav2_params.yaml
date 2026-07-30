@@ -199,7 +199,8 @@ planner_server:
     costmap_update_timeout: 3.0
     GridBased:
       # 경로가 이미 알려진 웨이포인트 구간이라 코스트맵 탐색(NavFn)이 불필요 —
-      # 두 점을 그대로 잇는 nav2_straightline_planner로 대체(벤더링된 패키지, PLAN.md Part 2 참고).
+      # 두 점을 그대로 잇는 nav2_straightline_planner로 대체(벤더링된 패키지,
+      # src/jangauto_nav2/nav2_straightline_planner/).
       # 주의: pluginlib 조회 키는 global_planner_plugin.xml의 class `name` 속성
       # ("/" 구분자, "nav2_straightline_planner/StraightLine") — C++ 타입명
       # ("::" 구분자)을 그대로 쓰면 "does not exist" 에러가 남(실행 확인됨).

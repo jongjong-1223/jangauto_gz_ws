@@ -6,13 +6,15 @@
 - **앱→로봇(인바운드)**: 앱이 보낸 JSON을 그대로 ROS 토픽으로 재발행한다
   (`/app/control_state`, `/app/command`) — 내용을 해석하지 않는 덤 중계.
 - **로봇→앱(아웃바운드, 상태)**: `/robot_status`(jangauto_msg/Status),
-  `/odometry/global`(위치), `/odom`(속도) 세 ROS 토픽을 구독해서 앱이
-  기대하는 JSON을 이 노드가 직접 조립한 뒤 주기적으로(`app_status_publish_period_sec`)
-  WebSocket으로 브로드캐스트한다 — ROS 토픽으로 재발행하지 않고 바로 WS로만
-  나간다. 앱 JSON 스키마(필드 이름 등)에 대한 지식은 이 노드에만 있다.
-  명령별 개별 응답(ack)은 없음 — `/robot_status`의 `mode`(WS로는
-  `current_state`) 변화만으로 앱이 수락 여부를 판단한다(거부 사유 텍스트는
-  전달하지 않음).
+  `/odometry/global`(위치), `/odom`(속도), `/jangauto_mission/calibration_complete`
+  (CAL 완료 여부) 네 ROS 토픽을 구독해서 앱이 기대하는 JSON을 이 노드가
+  직접 조립한 뒤 주기적으로(`app_status_publish_period_sec`) WebSocket으로
+  브로드캐스트한다 — ROS 토픽으로 재발행하지 않고 바로 WS로만 나간다. 앱
+  JSON 스키마(필드 이름 등)에 대한 지식은 이 노드에만 있다. 명령별 개별
+  응답(ack)은 없음 — `/robot_status`의 `current_state` 변화만으로 앱이
+  수락 여부를 판단한다(거부 사유 텍스트는 전달하지 않음). 단
+  `calibration_complete`는 MoveRequest가 항상 조용히 거부되는 이유(CAL 미완료)를
+  앱이 미리 알 수 있도록 상태 JSON에 직접 포함한다.
 - **로봇→앱(아웃바운드, 지도)**: `/global_costmap/costmap`(nav_msgs/OccupancyGrid —
   정적 `/map`+뎁스카메라 장애물+inflation이 합쳐진 Nav2 global costmap)을
   구독해서 `map_data` 메시지 하나로 두 가지를 같이 보낸다 — `map`(그리드 전체
@@ -603,14 +605,14 @@ class AppWebSocketBridge(Node):
             return
         self._last_move_msg_id = msg_id
 
-        current_mode = self._last_robot_status.mode if self._last_robot_status else None
+        current_state = self._last_robot_status.current_state if self._last_robot_status else None
         if not self._calibration_complete:
             self._send_move_ack(msg_id, False, 'CAL을 아직 완료하지 않음')
             return
-        if current_mode not in MOVE_ALLOWED_MODES:
+        if current_state not in MOVE_ALLOWED_MODES:
             self._send_move_ack(
                 msg_id, False,
-                f'현재 {current_mode} 상태에서는 이동 명령을 받을 수 없음(KEY/CAL만 가능)')
+                f'현재 {current_state} 상태에서는 이동 명령을 받을 수 없음(KEY/CAL만 가능)')
             return
 
         x = data.get('x')
@@ -674,9 +676,10 @@ class AppWebSocketBridge(Node):
             return  # /robot_status를 아직 한 번도 못 받음(부팅 직후) — 보낼 게 없음
 
         payload = {
-            'current_state': status.mode,
+            'current_state': status.current_state,
             'in_error': status.in_error,
             'error_reason': status.error_reason,
+            'calibration_complete': self._calibration_complete,
         }
 
         odom = self._last_global_odom
