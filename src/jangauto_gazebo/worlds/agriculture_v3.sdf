@@ -117,7 +117,11 @@
 
     <model name="tracked_v3">
       <self_collide>true</self_collide>
-        <pose>-9 9 0.2 0 0 0</pose>
+        <!-- yaw=2.5rad(~143°)로 일부러 틀어서 스폰 — IMU가 파워온 시점을
+             yaw=0으로 잡는 것(tracked_v3.sdf의 imu_sensor 주석 참고)과 맞물려,
+             CAL(전진/후진 GPS-IMU 비교)이 실제로 보정할 어긋남이 매번
+             재현되게 한다. -->
+        <pose>-5 0 0.2 0 0 2.5</pose>
         <!-- <pose>0 0 0 0 0 0</pose> -->
         <!-- <pose>-10 0.75 0.3 0 0 0</pose> -->
       <include merge="true">

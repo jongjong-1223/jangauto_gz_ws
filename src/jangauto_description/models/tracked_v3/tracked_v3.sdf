@@ -42,9 +42,17 @@
           <topic>imu</topic>
           <pose>0 0 0.25 0 0 0</pose>
           <imu>
+            <!-- ENU(절대 방위 기준) 대신 기본값(CUSTOM)을 그대로 써서, 실제
+                 IMU처럼 "파워온 시점의 자세를 yaw=0으로 잡는" 동작을
+                 재현한다 — CAL이 GPS 이동방향과 비교해 이 어긋남을
+                 보정하는 게 정상 시나리오이므로, 시뮬레이션도 매번 CAL이
+                 필요한 상태로 스폰돼야 실제 운용과 같아진다.
             <orientation_reference_frame>
               <localization>ENU</localization>
             </orientation_reference_frame>
+            -->
+            <!-- CAL 계산이 정확한지 확인하려면 아래 스폰 pose(agriculture_v3.sdf)의
+                 yaw와 이 노드가 계산해 낸 offset이 서로 부호까지 일치하는지 보면 됨. -->
             <angular_velocity>
               <x>
                 <noise type="gaussian">
