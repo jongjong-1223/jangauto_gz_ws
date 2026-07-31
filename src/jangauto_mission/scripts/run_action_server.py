@@ -27,7 +27,9 @@
 2. 웨이포인트를 순회하며 `turn_angle`이 임계값을 넘는 지점마다 배치를 끊음
 3. 각 배치를 `NavigateThroughPoses`로 이동 -> 도착 후 필요하면 `Spin`으로 제자리 회전
 4. cancel 요청 시 진행 중인 Nav2 sub-goal을 취소하고 Run goal도 canceled 처리
-5. 모든 웨이포인트 완료 시 성공 리턴
+5. Nav2 sub-goal이 실패(취소가 아닌 abort/reject 등)로 끝나면 즉시 Run 전체를
+   실패로 중단 — 실패한 구간을 못 본 척 다음 단계로 넘어가지 않는다.
+6. 모든 웨이포인트 완료 시 성공 리턴
 """
 
 import math
@@ -38,6 +40,7 @@ from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalRespons
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped
 
@@ -126,67 +129,86 @@ class RunActionServer(Node):
             if abs(wp.turn_angle) > self._turn_angle_threshold:
                 # 이 지점에서 회전이 필요 -> 여기까지 먼저 이동한 뒤 제자리 회전.
                 batch.append(wp)
-                cancelled = self._run_navigate_batch(goal_handle, batch, i, n)
-                if cancelled:
-                    return self._on_cancelled(goal_handle)
-                cancelled = self._run_spin(goal_handle, wp.turn_angle, i, n)
-                if cancelled:
-                    return self._on_cancelled(goal_handle)
+                outcome = self._run_navigate_batch(goal_handle, batch, i, n)
+                if outcome != 'ok':
+                    return self._on_subgoal_ended(goal_handle, outcome)
+                outcome = self._run_spin(goal_handle, wp.turn_angle, i, n)
+                if outcome != 'ok':
+                    return self._on_subgoal_ended(goal_handle, outcome)
                 batch = [wp]  # 회전 후 이 지점에서 새 배치 시작
             else:
                 batch.append(wp)
 
         if len(batch) > 1:
-            cancelled = self._run_navigate_batch(goal_handle, batch, n, n)
-            if cancelled:
-                return self._on_cancelled(goal_handle)
+            outcome = self._run_navigate_batch(goal_handle, batch, n, n)
+            if outcome != 'ok':
+                return self._on_subgoal_ended(goal_handle, outcome)
 
         goal_handle.succeed()
         return Run.Result(success=True, message=f'{n}개 웨이포인트 주행 완료')
 
-    def _on_cancelled(self, goal_handle):
-        goal_handle.canceled()
-        return Run.Result(success=False, message='주행 중 취소됨')
+    def _on_subgoal_ended(self, goal_handle, outcome: str):
+        """Nav2 sub-goal이 'ok'가 아니게 끝났을 때 Run 전체를 어떻게 마무리할지
+        결정 — 취소는 canceled로, 그 외(실패/거부/서버 없음)는 abort로 처리해서
+        실패한 구간을 못 본 척 다음 단계로 넘어가지 않는다."""
+        if outcome == 'cancelled':
+            goal_handle.canceled()
+            return Run.Result(success=False, message='주행 중 취소됨')
+        goal_handle.abort()
+        return Run.Result(success=False, message='주행 중 Nav2 하위 목표 실패로 중단됨')
 
     def _publish_progress(self, goal_handle, done_idx: int, total: int) -> None:
         goal_handle.publish_feedback(Run.Feedback(status=f'{done_idx}/{total} 웨이포인트 진행 중'))
 
-    def _run_navigate_batch(self, goal_handle, wp_batch: list, done_idx: int, total: int) -> bool:
-        """`wp_batch`를 NavigateThroughPoses 하나로 이동. cancel되면 True."""
+    def _run_navigate_batch(self, goal_handle, wp_batch: list, done_idx: int, total: int) -> str:
+        """`wp_batch`를 NavigateThroughPoses 하나로 이동. 반환값은 `_send_and_wait` 참고."""
         goal = NavigateThroughPoses.Goal()
         goal.poses = [_pose_from_waypoint(wp) for wp in wp_batch]
-        cancelled = self._send_and_wait(
+        outcome = self._send_and_wait(
             goal_handle, self._navigate_client, NAVIGATE_ACTION_NAME, goal)
-        if not cancelled:
+        if outcome == 'ok':
             self._publish_progress(goal_handle, done_idx, total)
-        return cancelled
+        return outcome
 
-    def _run_spin(self, goal_handle, angle: float, done_idx: int, total: int) -> bool:
-        """헤드랜드에서 `angle`만큼 제자리 회전. cancel되면 True."""
+    def _run_spin(self, goal_handle, angle: float, done_idx: int, total: int) -> str:
+        """헤드랜드에서 `angle`만큼 제자리 회전. 반환값은 `_send_and_wait` 참고."""
         goal = Spin.Goal()
         goal.target_yaw = angle
         goal.time_allowance = Duration(sec=int(self._spin_time_allowance))
-        cancelled = self._send_and_wait(
+        outcome = self._send_and_wait(
             goal_handle, self._spin_client, SPIN_ACTION_NAME, goal)
-        if not cancelled:
+        if outcome == 'ok':
             self._publish_progress(goal_handle, done_idx, total)
-        return cancelled
+        return outcome
 
     def _send_and_wait(self, run_goal_handle, client: ActionClient,
-                        action_name: str, goal) -> bool:
+                        action_name: str, goal) -> str:
         """Nav2 sub-goal을 보내고 완료를 기다린다. `MultiThreadedExecutor` 위에서
         돌기 때문에, 여기서 폴링 루프로 이 워커 스레드를 블로킹해도
         goal-response/result 콜백(다른 스레드)이나 `selected_coverage_path`
         구독은 계속 처리된다(calibration_action_server.py의 blocking 패턴과 동일).
 
-        반환: Run goal이 취소 요청됐으면 True, sub-goal이 정상 완료됐으면 False.
+        반환: 'ok'(정상 완료) / 'cancelled'(Run이 취소 요청됨) /
+        'failed'(서버 없음/goal 거부/sub-goal이 성공이 아닌 상태로 종료).
+        Nav2 액션 자체의 성공 여부(`GoalStatus`)까지 확인해야, 타임아웃 등으로
+        sub-goal이 실패했는데도 성공한 것처럼 다음 단계로 넘어가는 걸 막는다.
         """
         if not client.wait_for_server(timeout_sec=NAV2_WAIT_FOR_SERVER_TIMEOUT_SEC):
             self.get_logger().error(f"[Run] Action server '{action_name}' not available")
-            return True  # 계속 진행할 수 없으므로 취소와 동일하게 중단
+            return 'failed'
 
-        done = {'flag': False}
+        done = {'flag': False, 'outcome': 'failed'}
         sub_goal_handle_holder = [None]
+
+        def _on_result(future):
+            status = future.result().status
+            if status == GoalStatus.STATUS_SUCCEEDED:
+                done['outcome'] = 'ok'
+            else:
+                self.get_logger().error(
+                    f"[Run] '{action_name}' sub-goal ended with status {status} (not succeeded)")
+                done['outcome'] = 'failed'
+            done['flag'] = True
 
         def _on_goal_response(future):
             sub_handle = future.result()
@@ -195,7 +217,7 @@ class RunActionServer(Node):
                 done['flag'] = True
                 return
             sub_goal_handle_holder[0] = sub_handle
-            sub_handle.get_result_async().add_done_callback(lambda _f: done.update(flag=True))
+            sub_handle.get_result_async().add_done_callback(_on_result)
 
         client.send_goal_async(goal).add_done_callback(_on_goal_response)
 
@@ -203,9 +225,9 @@ class RunActionServer(Node):
             if run_goal_handle.is_cancel_requested:
                 if sub_goal_handle_holder[0] is not None:
                     sub_goal_handle_holder[0].cancel_goal_async()
-                return True
+                return 'cancelled'
             time.sleep(CANCEL_POLL_PERIOD_SEC)
-        return False
+        return done['outcome']
 
 
 def main():
