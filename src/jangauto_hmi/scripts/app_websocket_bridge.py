@@ -364,10 +364,15 @@ class AppWebSocketBridge(Node):
         self.selected_coverage_path_pub = self.create_publisher(
             CoveragePath, SELECTED_COVERAGE_PATH_TOPIC, latched_qos)
         self._coverage_path_goal_active = False
-        # 미확인 coverage_path_result 하나만 유지(map_data와 동일한 "최신 우선"
-        # 원칙) — {'msg_id','json','retry_count','last_sent_monotonic','candidate_paths'}.
-        # candidate_paths는 select_coverage_path가 왔을 때 다시 계산하지 않고
-        # 그대로 재사용할 원본 CoveragePath 메시지 2개.
+        # 최신 coverage_path_result 하나만 유지(map_data와 동일한 "최신 우선"
+        # 원칙) — {'msg_id','json','retry_count','last_sent_monotonic',
+        # 'candidate_paths','acked'}. candidate_paths는 select_coverage_path가
+        # 왔을 때 다시 계산하지 않고 그대로 재사용할 원본 CoveragePath 메시지
+        # 2개. `acked`가 True가 돼도(=app_ack 수신) 이 딕셔너리 자체는 지우지
+        # 않는다 — 재전송만 멈추고, 사용자가 나중에 select_coverage_path를
+        # 보낼 때까지 후보 데이터는 계속 유효해야 하기 때문(선택은 ack보다
+        # 한참 뒤에 올 수 있음). 지워지는 시점은 select 성공 또는 새
+        # generate_coverage_path로 교체될 때뿐.
         self._pending_coverage_path = None
         self._coverage_path_last_delivery_failed = False
         # calibration_complete와 동일하게 "한 번이라도 선택했는가"를 앱 상태
@@ -592,7 +597,10 @@ class AppWebSocketBridge(Node):
 
     def _on_app_ack(self, msg_id) -> None:
         """앱이 보낸 `app_ack` 처리 — pending map_data/coverage_path_result 중
-        msg_id가 일치하는 쪽의 재전송을 멈춘다."""
+        msg_id가 일치하는 쪽의 재전송을 멈춘다. map_data는 ack 즉시 완전히
+        치워도 되지만(다시 참조할 일 없음), coverage_path_result는 `acked`만
+        표시하고 데이터는 남겨둔다 — 나중에 올 select_coverage_path가 여전히
+        이 후보를 참조해야 하기 때문."""
         pending = self._pending_map_data
         if pending is not None and pending['msg_id'] == msg_id:
             self._pending_map_data = None
@@ -602,7 +610,7 @@ class AppWebSocketBridge(Node):
 
         pending = self._pending_coverage_path
         if pending is not None and pending['msg_id'] == msg_id:
-            self._pending_coverage_path = None
+            pending['acked'] = True
             self.get_logger().info(f'[AppWsBridge] coverage_path_result acked [ID: {msg_id}]')
 
     def _map_data_retry_check(self) -> None:
@@ -848,6 +856,7 @@ class AppWebSocketBridge(Node):
             'retry_count': 0,
             'last_sent_monotonic': time.monotonic(),
             'candidate_paths': candidate_paths,  # select_coverage_path에서 그대로 재사용
+            'acked': False,
         }
         self.get_logger().info(f'[AppWsBridge] Sending coverage_path_result [ID: {result_msg_id}]')
         self._broadcast_to_clients(text)
@@ -872,9 +881,10 @@ class AppWebSocketBridge(Node):
 
     def _coverage_path_retry_check(self) -> None:
         """주기 타이머 — `_map_data_retry_check`와 동일한 패턴(고정 timeout,
-        최대 횟수 후 포기), keepalive만 없음."""
+        최대 횟수 후 포기), keepalive만 없음. 이미 `acked`된 뒤에는 select
+        대기 중인 것뿐이므로 재전송하지 않고 그냥 넘어간다(데이터는 유지)."""
         pending = self._pending_coverage_path
-        if pending is None:
+        if pending is None or pending['acked']:
             return
         elapsed = time.monotonic() - pending['last_sent_monotonic']
         if elapsed < self.coverage_path_retry_timeout_sec:
@@ -1057,13 +1067,18 @@ class AppWebSocketBridge(Node):
         return stat
 
     def _coverage_path_delivery_diag_callback(self, stat):
+        pending = self._pending_coverage_path
         if self._coverage_path_last_delivery_failed:
             stat.summary(DiagnosticStatus.ERROR, 'Last coverage_path_result delivery exhausted retries')
-        elif self._pending_coverage_path is not None:
+        elif pending is not None and pending['acked']:
+            stat.summary(
+                DiagnosticStatus.OK,
+                f"Awaiting select_coverage_path [ID: {pending['msg_id']}]")
+        elif pending is not None:
             stat.summary(
                 DiagnosticStatus.WARN,
-                f"Retrying coverage_path_result [ID: {self._pending_coverage_path['msg_id']}] "
-                f"({self._pending_coverage_path['retry_count']}/{self.coverage_path_max_retries})")
+                f"Retrying coverage_path_result [ID: {pending['msg_id']}] "
+                f"({pending['retry_count']}/{self.coverage_path_max_retries})")
         else:
             stat.summary(DiagnosticStatus.OK, 'No pending coverage_path_result')
         return stat
