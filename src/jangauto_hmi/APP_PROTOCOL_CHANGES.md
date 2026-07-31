@@ -97,18 +97,25 @@ ack은 "접수했다"가 아니라 "계산까지 마쳤다"는 뜻이다 — 성
 
 **앱 → 로봇**
 ```json
-{"command": "select_coverage_path", "msg_id": "<coverage_path_result의 msg_id>", "path_index": 0}
+{"command": "select_coverage_path", "msg_id": "<이 요청 자체의 새 ID>", "ref_msg_id": "<coverage_path_result의 msg_id>", "path_index": 0}
 ```
-- `msg_id`: 반드시 직전에 받은 `coverage_path_result`의 `msg_id`를 그대로 참조.
+- `msg_id`: 다른 명령(`move`, `generate_coverage_path` 등)과 동일하게, 이 요청
+  자체를 추적하기 위해 **앱이 매번 새로 발급**하는 ID. ack의 `msg_id`로 그대로
+  돌아온다.
+- `ref_msg_id`: **직전에 받은 `coverage_path_result`의 `msg_id`를 그대로 참조**
+  — "어떤 생성 결과 중에서 고르는지"를 가리키는 값이라 새로 만들면 안 된다.
+  (`msg_id`/`ref_msg_id`를 분리한 이유: 다른 명령처럼 `msg_id`를 매번 새로
+  만드는 습관과 충돌하지 않게 하기 위함 — 참조가 필요한 필드만 이름을 다르게
+  둠.)
 - `path_index`: `0`(좌측 시작) 또는 `1`(우측 시작).
 
 **로봇 → 앱**
 ```json
-{"type": "select_coverage_path_ack", "msg_id": "<위 요청의 msg_id>", "accepted": true, "reason": ""}
+{"type": "select_coverage_path_ack", "msg_id": "<요청의 msg_id>", "accepted": true, "reason": ""}
 ```
-`accepted=false` 사유: 참조한 `msg_id`가 만료/불일치(이미 다른 결과로 대체됐거나
-너무 오래돼 재전송이 끝난 경우), 상태가 STOP/KEY/CAL이 아님, `path_index`가
-0/1이 아님.
+`accepted=false` 사유: 참조한 `ref_msg_id`가 만료/불일치(이미 다른 결과로
+대체됐거나 너무 오래돼 재전송이 끝난 경우), 상태가 STOP/KEY/CAL이 아님,
+`path_index`가 0/1이 아님.
 
 선택이 수락되면 로봇은 그 경로를 내부에 저장해두고, **이후 앱이 sw_bits를
 RUN으로 전환하면 그 경로를 그대로 주행한다.** 선택된 경로는 주행이 끝나도
@@ -134,3 +141,27 @@ UI 가드용).
 앱 -> (sw_bits를 RUN으로) control_state
 로봇 -> 선택된 경로를 Nav2로 주행
 ```
+
+## 변경 이력
+
+### 2026-08-01: `select_coverage_path`에 `ref_msg_id` 필드 신설
+- **배경**: 시뮬레이션에서 앱과 실제 연동 검증을 하던 중, `select_coverage_path`가
+  로봇에 정상 도착해도 매번 거부되는 문제가 발견됨.
+- **원인**: 앱이 `msg_id`에 이 요청 자신을 추적하기 위한 새 ID를 매번 생성해서
+  보내고 있었음. 그런데 로봇 쪽 검증은 이 필드가 직전에 받은
+  `coverage_path_result`의 `msg_id`를 그대로 참조해야 매칭되도록 설계돼 있었음
+  — 다른 명령(`move`, `generate_coverage_path` 등)은 전부 `msg_id`가 "이 요청
+  자신의 추적용 ID"인데 `select_coverage_path`만 예외적으로 "직전 결과를
+  가리키는 참조값"이었던 게 혼란의 근본 원인.
+- **변경**: `select_coverage_path`에 `ref_msg_id`(직전 `coverage_path_result`의
+  `msg_id`를 그대로 참조) 필드를 신설. `msg_id`는 다른 명령들과 동일하게 앱이
+  매번 새로 발급하는 자기 추적/ack용 ID로 되돌림 — 필드 하나가 명령마다 다른
+  의미를 갖지 않도록 분리.
+- **앱 측 반영 필요**: `SelectCoveragePathRequest`에 `ref_msg_id` 필드를
+  추가하고, 경로 선택 시 `CommandState.lastResultMsgId`(직전
+  `coverage_path_result` 수신 시 저장해둔 값)를 그대로 채워 보내야 함.
+  `msg_id`는 기존처럼 새로 생성해서 보내면 됨.
+- 부수적으로, 검증 과정에서 앱의 재연결 로직(`SocketManager.disconnectInternal()`
+  이후 바로 `connect()`)이 이전 연결의 정상 종료를 기다리지 않아 일시적으로
+  소켓 2개가 동시에 열리는 현상도 함께 발견됨 — 로봇 쪽 변경은 아니지만 앱
+  팀에 별도 공유 필요.

@@ -44,8 +44,8 @@
   `coverage_path_action_server.py`)을 호출해 좌/우측 시작 후보 2개를 계산시키고,
   완료되면 `generate_coverage_path_ack`(수락/거부)와 `coverage_path_result`(후보
   2개, `map_data`와 동일한 msg_id+재전송+`app_ack` 신뢰성 패턴)를 함께 보낸다.
-  `command=="select_coverage_path"`가 오면(직전 `coverage_path_result`의 msg_id +
-  `path_index` 참조) 해당 경로를 `/jangauto_mission/selected_coverage_path`
+  `command=="select_coverage_path"`가 오면(직전 `coverage_path_result`의 msg_id를
+  `ref_msg_id`로 참조 + `path_index`) 해당 경로를 `/jangauto_mission/selected_coverage_path`
   (latched)로 publish하고 `select_coverage_path_ack`를 응답한다 — 이 select
   자체가 `coverage_path_result`에 대한 ack도 겸한다(별도 `app_ack` 불필요).
   RUN 상태 진입 시 `run_action_server.py`가 이 latched 토픽의 최신값을 그대로
@@ -896,19 +896,24 @@ class AppWebSocketBridge(Node):
         self._broadcast_to_clients(pending['json'])
 
     def _handle_select_coverage_path_command(self, data: dict, _peer) -> None:
-        """`command=="select_coverage_path"` 처리 — `msg_id`로 직전
+        """`command=="select_coverage_path"` 처리 — `ref_msg_id`로 직전
         `coverage_path_result`를 참조하고 `path_index`(0/1)로 후보를 골라
-        `selected_coverage_path`(latched)에 publish한다. 이 select 요청 자체가
-        해당 결과를 받았다는 증거이므로 별도 `app_ack` 없이도 재전송을 멈춘다."""
+        `selected_coverage_path`(latched)에 publish한다. `msg_id`는 다른 명령들과
+        동일하게 앱이 매번 새로 발급하는 이 요청 자체의 추적/ack용 ID이고,
+        "어떤 결과를 선택하는지"는 별도 `ref_msg_id` 필드로 명시한다(하나의
+        `msg_id` 필드가 명령마다 다른 의미를 갖는 걸 피하기 위함). 이 select
+        요청 자체가 해당 결과를 받았다는 증거이므로 별도 `app_ack` 없이도
+        재전송을 멈춘다."""
         msg_id = data.get('msg_id')
+        ref_msg_id = data.get('ref_msg_id')
         path_index = data.get('path_index')
         current_state = self._last_robot_status.current_state if self._last_robot_status else None
 
         pending = self._pending_coverage_path
-        if pending is None or pending['msg_id'] != msg_id:
+        if pending is None or pending['msg_id'] != ref_msg_id:
             self._send_simple_ack(
                 'select_coverage_path_ack', msg_id, False,
-                '참조한 경로 결과를 찾을 수 없음(만료되었거나 잘못된 msg_id)')
+                '참조한 경로 결과를 찾을 수 없음(만료되었거나 잘못된 ref_msg_id)')
             return
         if current_state not in COVERAGE_PATH_ALLOWED_MODES:
             self._send_simple_ack(
@@ -926,7 +931,7 @@ class AppWebSocketBridge(Node):
         self._pending_coverage_path = None  # select 자체가 ack 역할
 
         self.get_logger().info(
-            f'[AppWsBridge] Coverage path selected: index={path_index} [ID: {msg_id}]')
+            f'[AppWsBridge] Coverage path selected: index={path_index} [ref={ref_msg_id}]')
         self._send_simple_ack('select_coverage_path_ack', msg_id, True, '')
 
     def _publish_app_status_tick(self) -> None:
