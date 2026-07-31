@@ -2,7 +2,11 @@
 
 - `mission_state_machine`: YASMIN 상태머신(오케스트레이션).
 - `calibration_action_server`/`align_action_server`/`run_action_server`: CAL/ALIGN/RUN
-  상태가 호출하는 액션 서버(TODO placeholder — 실제 알고리즘 미정).
+  상태가 호출하는 액션 서버. CAL은 완성, ALIGN은 아직 TODO placeholder, RUN은
+  선택된 ㄹ자 커버리지 경로를 Nav2로 실제 주행한다.
+- `coverage_path_action_server`: sw_bits 전이와 무관한 on-demand 액션 서버.
+  앱이 STOP/KEY/CAL 상태에서 언제든 호출해 온실 다각형으로부터 ㄹ자 경로
+  후보 2개(좌/우측 시작)를 계산한다 — `app_websocket_bridge.py`가 클라이언트.
 - `mission_diagnostics_monitor`: `/diagnostics_agg`의 실제 문제(GPS/Localization/
   Nav2/Control 그룹)를 `/jangauto_mission/error`로 연결해 mission_state_machine이
   강제 STOP하게 함. HMI는 계속 제외(이유는 mission_diagnostics_monitor.py
@@ -45,6 +49,13 @@ def generate_launch_description():
         output="screen",
     )
 
+    coverage_path_action_server_node = Node(
+        package="jangauto_mission",
+        executable="coverage_path_action_server.py",
+        name="coverage_path_action_server",
+        output="screen",
+    )
+
     mission_diagnostics_monitor_node = Node(
         package="jangauto_mission",
         executable="mission_diagnostics_monitor.py",
@@ -60,5 +71,6 @@ def generate_launch_description():
         calibration_action_server_node,
         align_action_server_node,
         run_action_server_node,
+        coverage_path_action_server_node,
         mission_diagnostics_monitor_node,
     ])

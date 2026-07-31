@@ -33,6 +33,8 @@ set(msg_files
   "msg/Sound.msg"
   "msg/VersionInfo.msg"
   "msg/Status.msg"
+  "msg/Waypoint.msg"
+  "msg/CoveragePath.msg"
 )
 
 set(srv_files
@@ -46,6 +48,7 @@ set(action_files
   "action/Calibrate.action"
   "action/Align.action"
   "action/Run.action"
+  "action/GenerateCoveragePath.action"
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}

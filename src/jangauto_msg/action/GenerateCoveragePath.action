@@ -1,0 +1,19 @@
+# 앱이 보낸 온실 다각형+파라미터로 ㄹ자 커버리지 경로 후보 2개(좌측/우측 시작)를
+# 생성하는 액션. app_websocket_bridge.py가 클라이언트 역할을 하며, 앱의
+# generate_coverage_path 명령을 받으면 이 goal로 그대로 옮겨 보낸다.
+# coverage_path_action_server.py(jangauto_mission)가 서버.
+
+geometry_msgs/Polygon polygon    # 온실 외곽 다각형 (map 프레임, app이 map_data로 받은 좌표계와 동일)
+float64[] edge_safety_dist       # 변별 안전거리, polygon.points와 길이가 같아야 함
+                                  # (변 i = points[i] -> points[i+1])
+float64 robot_radius              # 로봇 풋프린트 외접원 반지름 (m)
+float64 yaw_deg                   # 두둑을 정렬할 기준 방향 (deg)
+float64 ridge_spacing              # 두둑 간격 (m)
+float64 headland_length            # 헤드랜드 길이, 양끝 각각 (m)
+float64 cell_size                  # 격자 해상도 (m), 0이면 서버 기본 파라미터 사용
+---
+bool success
+string message
+CoveragePath[2] candidate_paths  # [0]=좌측 시작, [1]=우측 시작 (success=false면 비어있음)
+---
+string status

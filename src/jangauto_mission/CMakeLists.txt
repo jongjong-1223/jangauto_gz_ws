@@ -9,6 +9,8 @@ install(PROGRAMS
   scripts/align_action_server.py
   scripts/run_action_server.py
   scripts/mission_diagnostics_monitor.py
+  scripts/coverage_path_action_server.py
+  scripts/coverage_path_lib.py
   DESTINATION lib/${PROJECT_NAME}
   PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ
 )

@@ -56,9 +56,14 @@ class ImuYawCorrector(Node):
         self.create_subscription(Float64, YAW_OFFSET_TOPIC, self._on_offset, 10)
 
     def _on_offset(self, msg: Float64) -> None:
-        self._yaw_offset = float(msg.data)
-        self.get_logger().info(
-            f'[IMU_YAW_CORRECTOR] yaw_offset set to {math.degrees(self._yaw_offset):.2f} deg')
+        # calibration_action_server.py가 늦게 뜨는 구독자를 위해 이 값을 1초마다
+        # 계속 재발행하므로(YAW_OFFSET_PUBLISH_PERIOD_SEC), 실제로 바뀔 때만
+        # 로그를 남긴다 — 안 그러면 CAL 완료 후 로그가 끝없이 반복된다.
+        new_offset = float(msg.data)
+        if new_offset != self._yaw_offset:
+            self.get_logger().info(
+                f'[IMU_YAW_CORRECTOR] yaw_offset set to {math.degrees(new_offset):.2f} deg')
+        self._yaw_offset = new_offset
 
     def _on_imu(self, msg: Imu) -> None:
         if abs(self._yaw_offset) < 1e-12:

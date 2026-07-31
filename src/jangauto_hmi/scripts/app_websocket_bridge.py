@@ -39,6 +39,17 @@
   스레드풀(`ThreadPoolExecutor`)에서 처리한다. KEY 모드에서 조이스틱을
   건드리면(`cmd_vel_manual` 수신) 진행 중이던 move goal은 즉시 취소된다
   (사람의 직접 개입이 자율 이동보다 우선).
+- **앱→로봇(ㄹ자 커버리지 경로)**: `command=="generate_coverage_path"`가 오면
+  현재 STOP/KEY/CAL 상태일 때만 `generate_coverage_path` 액션(jangauto_mission의
+  `coverage_path_action_server.py`)을 호출해 좌/우측 시작 후보 2개를 계산시키고,
+  완료되면 `generate_coverage_path_ack`(수락/거부)와 `coverage_path_result`(후보
+  2개, `map_data`와 동일한 msg_id+재전송+`app_ack` 신뢰성 패턴)를 함께 보낸다.
+  `command=="select_coverage_path"`가 오면(직전 `coverage_path_result`의 msg_id +
+  `path_index` 참조) 해당 경로를 `/jangauto_mission/selected_coverage_path`
+  (latched)로 publish하고 `select_coverage_path_ack`를 응답한다 — 이 select
+  자체가 `coverage_path_result`에 대한 ack도 겸한다(별도 `app_ack` 불필요).
+  RUN 상태 진입 시 `run_action_server.py`가 이 latched 토픽의 최신값을 그대로
+  주행한다.
 - mDNS(`_robot._tcp.local.`)로 서비스를 광고해서 앱이 IP를 몰라도 자동
   탐색할 수 있게 한다.
 - 하트비트(`/app/link_alive`)로 앱 연결 생존 여부를 추적하고,
@@ -75,9 +86,10 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String, Bool
 from nav_msgs.msg import Odometry, OccupancyGrid
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, Point32
 
-from jangauto_msg.msg import Status
+from jangauto_msg.msg import Status, CoveragePath
+from jangauto_msg.action import GenerateCoveragePath
 from nav2_msgs.action import NavigateToPose
 
 import diagnostic_updater
@@ -108,6 +120,13 @@ CMD_VEL_MANUAL_TOPIC = 'cmd_vel_manual'       # 조이스틱 출력 — 값이 �
 MOVE_ALLOWED_MODES = {'KEY', 'CAL'}
 NAV2_ACTION_NAME = 'navigate_to_pose'
 NAV2_WAIT_FOR_SERVER_TIMEOUT_SEC = 5.0
+
+# generate_coverage_path/select_coverage_path가 수락되려면 이 모드들 중 하나여야
+# 함 — RUN/ALIGN 중엔 계산 자원을 뺏기지 않고, 주행 중인 경로가 바뀌는 레이스도
+# 막는다(coverage_path_action_server.py의 goal_callback도 동일 집합으로 게이팅).
+COVERAGE_PATH_ALLOWED_MODES = {'STOP', 'KEY', 'CAL'}
+GENERATE_COVERAGE_PATH_ACTION_NAME = 'generate_coverage_path'
+SELECTED_COVERAGE_PATH_TOPIC = '/jangauto_mission/selected_coverage_path'
 
 # 진단 최근성 판정 임계값(초) — gps_covariance_filler.py와 동일한 관례
 # (time.monotonic() 기반, 없음=ERROR/오래됨=WARN/정상=OK).
@@ -244,6 +263,9 @@ class AppWebSocketBridge(Node):
         self.declare_parameter('map_data_retry_check_period_sec', 0.2)
         self.declare_parameter('map_data_keepalive_period_sec', 5.0)
         self.declare_parameter('map_occupied_threshold', 99)
+        self.declare_parameter('coverage_path_retry_timeout_sec', 1.0)
+        self.declare_parameter('coverage_path_max_retries', 3)
+        self.declare_parameter('coverage_path_retry_check_period_sec', 0.2)
 
         self.host = self.get_parameter('host').get_parameter_value().string_value
         self.port = self.get_parameter('port').get_parameter_value().integer_value
@@ -263,6 +285,12 @@ class AppWebSocketBridge(Node):
             'map_data_keepalive_period_sec').get_parameter_value().double_value
         self.map_occupied_threshold = self.get_parameter(
             'map_occupied_threshold').get_parameter_value().integer_value
+        self.coverage_path_retry_timeout_sec = self.get_parameter(
+            'coverage_path_retry_timeout_sec').get_parameter_value().double_value
+        self.coverage_path_max_retries = self.get_parameter(
+            'coverage_path_max_retries').get_parameter_value().integer_value
+        self.coverage_path_retry_check_period_sec = self.get_parameter(
+            'coverage_path_retry_check_period_sec').get_parameter_value().double_value
 
         # Publishers
         self.control_state_pub = self.create_publisher(String, '/app/control_state', 10)
@@ -327,6 +355,26 @@ class AppWebSocketBridge(Node):
         self._move_worker_pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=2, thread_name_prefix='move_goal')
 
+        # ㄹ자 커버리지 경로 생성/선택 처리 상태 — move와 마찬가지로 판단·액션
+        # 연동·WS 응답까지 이 노드가 전담한다(mission 쪽엔 계산 액션 서버만 있음).
+        self._coverage_path_client = ActionClient(
+            self, GenerateCoveragePath, GENERATE_COVERAGE_PATH_ACTION_NAME)
+        self._coverage_path_worker_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix='coverage_path')
+        self.selected_coverage_path_pub = self.create_publisher(
+            CoveragePath, SELECTED_COVERAGE_PATH_TOPIC, latched_qos)
+        self._coverage_path_goal_active = False
+        # 미확인 coverage_path_result 하나만 유지(map_data와 동일한 "최신 우선"
+        # 원칙) — {'msg_id','json','retry_count','last_sent_monotonic','candidate_paths'}.
+        # candidate_paths는 select_coverage_path가 왔을 때 다시 계산하지 않고
+        # 그대로 재사용할 원본 CoveragePath 메시지 2개.
+        self._pending_coverage_path = None
+        self._coverage_path_last_delivery_failed = False
+        # calibration_complete와 동일하게 "한 번이라도 선택했는가"를 앱 상태
+        # tick에 노출 — 이 노드가 곧 selected_coverage_path의 발행자이므로
+        # 별도 구독 없이 발행 시점에 바로 갱신한다.
+        self._path_selected = False
+
         # Shared state between the asyncio thread and the ROS timer thread.
         # NOTE: names are prefixed with _ws_ to avoid clashing with rclpy's
         # own Node internals (e.g. Node already has a private `_clients`
@@ -349,6 +397,8 @@ class AppWebSocketBridge(Node):
         self.create_timer(self.app_status_publish_period_sec, self._publish_app_status_tick)
         self.create_timer(self.map_data_retry_check_period_sec, self._map_data_retry_check)
         self.create_timer(self.map_data_keepalive_period_sec, self._map_data_keepalive_tick)
+        self.create_timer(
+            self.coverage_path_retry_check_period_sec, self._coverage_path_retry_check)
 
         self._diag_updater = diagnostic_updater.Updater(self)
         self._diag_updater.setHardwareID('app_websocket_bridge')
@@ -358,6 +408,7 @@ class AppWebSocketBridge(Node):
         self._diag_updater.add('Global odometry reception', self._global_odom_diag_callback)
         self._diag_updater.add('Local odometry reception', self._local_odom_diag_callback)
         self._diag_updater.add('Map data delivery', self._map_data_delivery_diag_callback)
+        self._diag_updater.add('Coverage path delivery', self._coverage_path_delivery_diag_callback)
 
         self.get_logger().info(
             f'[AppWsBridge] Starting WebSocket server on {self.host}:{self.port} '
@@ -470,8 +521,13 @@ class AppWebSocketBridge(Node):
             out = String()
             out.data = json.dumps(data)
             self.command_pub.publish(out)
-            if data.get('command') == 'move':
+            command = data.get('command')
+            if command == 'move':
                 self._handle_move_command(data, peer)
+            elif command == 'generate_coverage_path':
+                self._handle_generate_coverage_path_command(data, peer)
+            elif command == 'select_coverage_path':
+                self._handle_select_coverage_path_command(data, peer)
         elif data.keys() & CONTROL_STATE_KEYS:
             out = String()
             out.data = json.dumps(data)
@@ -535,13 +591,19 @@ class AppWebSocketBridge(Node):
         self._broadcast_to_clients(text)
 
     def _on_app_ack(self, msg_id) -> None:
-        """앱이 보낸 `app_ack` 처리 — pending map_data와 msg_id가 일치하면
-        재전송을 멈춘다."""
+        """앱이 보낸 `app_ack` 처리 — pending map_data/coverage_path_result 중
+        msg_id가 일치하는 쪽의 재전송을 멈춘다."""
         pending = self._pending_map_data
         if pending is not None and pending['msg_id'] == msg_id:
             self._pending_map_data = None
             self._map_data_last_delivery_failed = False
             self.get_logger().info(f'[AppWsBridge] map_data acked [ID: {msg_id}]')
+            return
+
+        pending = self._pending_coverage_path
+        if pending is not None and pending['msg_id'] == msg_id:
+            self._pending_coverage_path = None
+            self.get_logger().info(f'[AppWsBridge] coverage_path_result acked [ID: {msg_id}]')
 
     def _map_data_retry_check(self) -> None:
         """주기 타이머 — pending map_data가 timeout을 넘겼는데 아직 ack가 안
@@ -658,13 +720,214 @@ class AppWebSocketBridge(Node):
             self._active_move_goal_handle = None
 
     def _send_move_ack(self, msg_id, accepted: bool, reason: str) -> None:
+        self._send_simple_ack('move_ack', msg_id, accepted, reason)
+
+    def _send_simple_ack(self, ack_type: str, msg_id, accepted: bool, reason: str) -> None:
+        """`{type, msg_id, accepted, reason}` 형태의 1회성 명령 ack 공통 전송 —
+        재전송 없음(이미 열린 소켓 위의 직접 응답이라 유실 위험이 낮고, 유실돼도
+        앱이 명령을 다시 보내면 됨). `move_ack`/`generate_coverage_path_ack`/
+        `select_coverage_path_ack`가 전부 이 형태를 공유한다."""
         text = json.dumps({
-            'type': 'move_ack',
+            'type': ack_type,
             'msg_id': msg_id,
             'accepted': accepted,
             'reason': reason,
         })
         self._broadcast_to_clients(text)
+
+    # ------------------------------------------------- coverage path (generate/select)
+    def _handle_generate_coverage_path_command(self, data: dict, _peer) -> None:
+        """`command=="generate_coverage_path"` 처리 — 상태 게이팅과 파라미터
+        파싱만 이 스레드(WS 콜백 스레드)에서 하고, 실제 액션 호출(블로킹 대기
+        포함)은 전용 워커풀에 위임한다."""
+        msg_id = data.get('msg_id')
+        current_state = self._last_robot_status.current_state if self._last_robot_status else None
+
+        if current_state not in COVERAGE_PATH_ALLOWED_MODES:
+            self._send_simple_ack(
+                'generate_coverage_path_ack', msg_id, False,
+                f'현재 {current_state} 상태에서는 경로 생성을 할 수 없음(STOP/KEY/CAL만 가능)')
+            return
+        if self._coverage_path_goal_active:
+            self._send_simple_ack(
+                'generate_coverage_path_ack', msg_id, False, '이미 경로 생성이 진행 중')
+            return
+
+        try:
+            polygon_points = [
+                Point32(x=float(p['x']), y=float(p['y']), z=0.0) for p in data['polygon']]
+            edge_safety_dist = [float(v) for v in data['edge_safety_dist']]
+            robot_radius = float(data['robot_radius'])
+            yaw_deg = float(data['yaw_deg'])
+            ridge_spacing = float(data['ridge_spacing'])
+            headland_length = float(data['headland_length'])
+            cell_size = float(data.get('cell_size', 0.0))
+        except (KeyError, TypeError, ValueError) as e:
+            self._send_simple_ack(
+                'generate_coverage_path_ack', msg_id, False, f'잘못된 파라미터: {e}')
+            return
+
+        self._coverage_path_goal_active = True
+        self._coverage_path_worker_pool.submit(
+            self._run_generate_coverage_path, msg_id, polygon_points, edge_safety_dist,
+            robot_radius, yaw_deg, ridge_spacing, headland_length, cell_size)
+
+    def _run_generate_coverage_path(self, msg_id, polygon_points, edge_safety_dist,
+                                     robot_radius, yaw_deg, ridge_spacing,
+                                     headland_length, cell_size) -> None:
+        """워커 스레드에서 실행 — `generate_coverage_path` 액션은 계산 하나가
+        보통 1초 이내로 끝나므로(NavigateToPose처럼 몇 분씩 걸리는 주행이 아님),
+        move처럼 "accept"와 "최종 결과"를 분리하지 않고 계산이 끝난 시점에
+        `generate_coverage_path_ack` 하나로 accept/reject/실패를 전부 알린다."""
+        if not self._coverage_path_client.wait_for_server(
+                timeout_sec=NAV2_WAIT_FOR_SERVER_TIMEOUT_SEC):
+            self._coverage_path_goal_active = False
+            self._send_simple_ack(
+                'generate_coverage_path_ack', msg_id, False, '경로 생성 액션 서버 응답 없음')
+            return
+
+        goal = GenerateCoveragePath.Goal()
+        goal.polygon.points = polygon_points
+        goal.edge_safety_dist = edge_safety_dist
+        goal.robot_radius = robot_radius
+        goal.yaw_deg = yaw_deg
+        goal.ridge_spacing = ridge_spacing
+        goal.headland_length = headland_length
+        goal.cell_size = cell_size
+
+        done_event = threading.Event()
+        outcome = {}
+
+        def _on_goal_response(future):
+            goal_handle = future.result()
+            if not goal_handle.accepted:
+                outcome['error'] = '경로 생성 액션 서버가 goal을 거부함'
+                done_event.set()
+                return
+            result_future = goal_handle.get_result_async()
+
+            def _on_result(rfuture):
+                outcome['result'] = rfuture.result().result
+                done_event.set()
+
+            result_future.add_done_callback(_on_result)
+
+        self._coverage_path_client.send_goal_async(goal).add_done_callback(_on_goal_response)
+        # 워커 스레드 전용 블로킹 — WS/rclpy spin 스레드는 영향받지 않는다(move와 동일 패턴).
+        done_event.wait()
+
+        self._coverage_path_goal_active = False
+
+        if 'error' in outcome:
+            self._send_simple_ack('generate_coverage_path_ack', msg_id, False, outcome['error'])
+            return
+        result = outcome['result']
+        if not result.success:
+            self._send_simple_ack('generate_coverage_path_ack', msg_id, False, result.message)
+            return
+
+        self._send_simple_ack('generate_coverage_path_ack', msg_id, True, '')
+        self._broadcast_coverage_path_result(list(result.candidate_paths))
+
+    def _broadcast_coverage_path_result(self, candidate_paths: list) -> None:
+        """계산된 후보 2개를 `map_data`와 동일한 msg_id+재전송+`app_ack` 패턴으로
+        전송한다. `map_data`와 달리 재연결 keepalive는 두지 않는다 — 이건
+        "항상 최신이어야 하는 지도 상태"가 아니라 "1회성 제안"이라, 나중에
+        재접속한 클라이언트에 오래된 제안을 다시 들이미는 게 오히려 혼란을 줌."""
+        result_msg_id = uuid.uuid4().hex[:8]
+        payload = {
+            'type': 'coverage_path_result',
+            'msg_id': result_msg_id,
+            'paths': [self._coverage_path_to_json(p) for p in candidate_paths],
+        }
+        text = json.dumps(payload)
+
+        self._pending_coverage_path = {
+            'msg_id': result_msg_id,
+            'json': text,
+            'retry_count': 0,
+            'last_sent_monotonic': time.monotonic(),
+            'candidate_paths': candidate_paths,  # select_coverage_path에서 그대로 재사용
+        }
+        self.get_logger().info(f'[AppWsBridge] Sending coverage_path_result [ID: {result_msg_id}]')
+        self._broadcast_to_clients(text)
+
+    @staticmethod
+    def _coverage_path_to_json(path: CoveragePath) -> dict:
+        return {
+            'start_side': path.start_side,
+            'rect_length': path.rect_length,
+            'rect_width': path.rect_width,
+            'work_len': path.work_len,
+            'n_ridges': path.n_ridges,
+            'waypoints': [
+                {
+                    'x': wp.x, 'y': wp.y, 'yaw': wp.yaw, 'turn_angle': wp.turn_angle,
+                    'dist_to_next': wp.dist_to_next, 'kind': wp.kind,
+                    'row_index': wp.row_index,
+                }
+                for wp in path.waypoints
+            ],
+        }
+
+    def _coverage_path_retry_check(self) -> None:
+        """주기 타이머 — `_map_data_retry_check`와 동일한 패턴(고정 timeout,
+        최대 횟수 후 포기), keepalive만 없음."""
+        pending = self._pending_coverage_path
+        if pending is None:
+            return
+        elapsed = time.monotonic() - pending['last_sent_monotonic']
+        if elapsed < self.coverage_path_retry_timeout_sec:
+            return
+
+        if pending['retry_count'] >= self.coverage_path_max_retries:
+            self.get_logger().warning(
+                f"[AppWsBridge] coverage_path_result [ID: {pending['msg_id']}] "
+                f"retry exhausted, giving up")
+            self._pending_coverage_path = None
+            self._coverage_path_last_delivery_failed = True
+            return
+
+        pending['retry_count'] += 1
+        pending['last_sent_monotonic'] = time.monotonic()
+        self.get_logger().info(
+            f"[AppWsBridge] Retrying coverage_path_result [ID: {pending['msg_id']}] "
+            f"({pending['retry_count']}/{self.coverage_path_max_retries})")
+        self._broadcast_to_clients(pending['json'])
+
+    def _handle_select_coverage_path_command(self, data: dict, _peer) -> None:
+        """`command=="select_coverage_path"` 처리 — `msg_id`로 직전
+        `coverage_path_result`를 참조하고 `path_index`(0/1)로 후보를 골라
+        `selected_coverage_path`(latched)에 publish한다. 이 select 요청 자체가
+        해당 결과를 받았다는 증거이므로 별도 `app_ack` 없이도 재전송을 멈춘다."""
+        msg_id = data.get('msg_id')
+        path_index = data.get('path_index')
+        current_state = self._last_robot_status.current_state if self._last_robot_status else None
+
+        pending = self._pending_coverage_path
+        if pending is None or pending['msg_id'] != msg_id:
+            self._send_simple_ack(
+                'select_coverage_path_ack', msg_id, False,
+                '참조한 경로 결과를 찾을 수 없음(만료되었거나 잘못된 msg_id)')
+            return
+        if current_state not in COVERAGE_PATH_ALLOWED_MODES:
+            self._send_simple_ack(
+                'select_coverage_path_ack', msg_id, False,
+                f'현재 {current_state} 상태에서는 경로 선택을 할 수 없음(STOP/KEY/CAL만 가능)')
+            return
+        if path_index not in (0, 1):
+            self._send_simple_ack(
+                'select_coverage_path_ack', msg_id, False, f'잘못된 path_index: {path_index}')
+            return
+
+        selected = pending['candidate_paths'][path_index]
+        self.selected_coverage_path_pub.publish(selected)
+        self._path_selected = True
+        self._pending_coverage_path = None  # select 자체가 ack 역할
+
+        self.get_logger().info(
+            f'[AppWsBridge] Coverage path selected: index={path_index} [ID: {msg_id}]')
+        self._send_simple_ack('select_coverage_path_ack', msg_id, True, '')
 
     def _publish_app_status_tick(self) -> None:
         """주기 타이머 — 캐시된 `/robot_status`+`/odometry/global`+`/odom`을 모아
@@ -680,6 +943,7 @@ class AppWebSocketBridge(Node):
             'in_error': status.in_error,
             'error_reason': status.error_reason,
             'calibration_complete': self._calibration_complete,
+            'path_selected': self._path_selected,
         }
 
         odom = self._last_global_odom
@@ -787,12 +1051,25 @@ class AppWebSocketBridge(Node):
             stat.summary(DiagnosticStatus.OK, 'No pending map_data')
         return stat
 
+    def _coverage_path_delivery_diag_callback(self, stat):
+        if self._coverage_path_last_delivery_failed:
+            stat.summary(DiagnosticStatus.ERROR, 'Last coverage_path_result delivery exhausted retries')
+        elif self._pending_coverage_path is not None:
+            stat.summary(
+                DiagnosticStatus.WARN,
+                f"Retrying coverage_path_result [ID: {self._pending_coverage_path['msg_id']}] "
+                f"({self._pending_coverage_path['retry_count']}/{self.coverage_path_max_retries})")
+        else:
+            stat.summary(DiagnosticStatus.OK, 'No pending coverage_path_result')
+        return stat
+
     # ---------------------------------------------------------------- cleanup
     def destroy_node(self):
         """노드 종료 시 mDNS 등록 해제 + 웹소켓 서버 정리까지 마친 뒤
         상위 `Node.destroy_node()`를 호출한다."""
         self.get_logger().info('[AppWsBridge] Shutting down App WebSocket Bridge...')
         self._move_worker_pool.shutdown(wait=False)
+        self._coverage_path_worker_pool.shutdown(wait=False)
         if self._zeroconf is not None:
             try:
                 if self._mdns_service_info is not None:
