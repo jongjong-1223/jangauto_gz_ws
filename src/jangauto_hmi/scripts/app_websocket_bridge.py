@@ -371,8 +371,10 @@ class AppWebSocketBridge(Node):
         # 2개. `acked`가 True가 돼도(=app_ack 수신) 이 딕셔너리 자체는 지우지
         # 않는다 — 재전송만 멈추고, 사용자가 나중에 select_coverage_path를
         # 보낼 때까지 후보 데이터는 계속 유효해야 하기 때문(선택은 ack보다
-        # 한참 뒤에 올 수 있음). 지워지는 시점은 select 성공 또는 새
-        # generate_coverage_path로 교체될 때뿐.
+        # 한참 뒤에 올 수 있음). select가 성공해도 지우지 않는다 — 같은
+        # generate 결과 안에서 마음이 바뀌면 다른 후보로 재선택할 수 있어야
+        # 하기 때문(재선택 시 최신 선택으로 latched 토픽만 갱신됨). 지워지는
+        # 시점은 새 generate_coverage_path로 교체될 때뿐.
         self._pending_coverage_path = None
         self._coverage_path_last_delivery_failed = False
         # calibration_complete와 동일하게 "한 번이라도 선택했는가"를 앱 상태
@@ -913,7 +915,12 @@ class AppWebSocketBridge(Node):
         "어떤 결과를 선택하는지"는 별도 `ref_msg_id` 필드로 명시한다(하나의
         `msg_id` 필드가 명령마다 다른 의미를 갖는 걸 피하기 위함). 이 select
         요청 자체가 해당 결과를 받았다는 증거이므로 별도 `app_ack` 없이도
-        재전송을 멈춘다."""
+        재전송을 멈춘다.
+
+        같은 `ref_msg_id`로 여러 번 호출 가능 — 재선택할 때마다 그 값으로
+        `selected_coverage_path`를 덮어써서 갱신한다(마음이 바뀌어 좌/우측
+        후보를 바꿔 고르는 경우 지원). `_pending_coverage_path`는 여기서
+        지우지 않는다 — 새 `generate_coverage_path`가 올 때만 교체된다."""
         msg_id = data.get('msg_id')
         ref_msg_id = data.get('ref_msg_id')
         path_index = data.get('path_index')
@@ -938,7 +945,8 @@ class AppWebSocketBridge(Node):
         selected = pending['candidate_paths'][path_index]
         self.selected_coverage_path_pub.publish(selected)
         self._path_selected = True
-        self._pending_coverage_path = None  # select 자체가 ack 역할
+        # _pending_coverage_path는 지우지 않는다 — 같은 결과 안에서 재선택
+        # 가능하게 유지(새 generate_coverage_path로만 교체됨).
 
         self.get_logger().info(
             f'[AppWsBridge] Coverage path selected: index={path_index} [ref={ref_msg_id}]')
