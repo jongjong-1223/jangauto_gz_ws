@@ -16,16 +16,17 @@
   조립·명령별 개별 응답(ack)은 이제 이 노드의 책임이 아니다 — `app_websocket_bridge.py`가
   `/robot_status`를 구독해서 직접 조립해 앱에 보낸다(ack 없이 이 토픽의 `current_state`
   변화만으로 앱이 수락 여부를 판단).
-- CAL/ALIGN/RUN은 상태 진입 시 액션 서버(`calibrate`/`align`/`run` — CAL은
-  구현됨, ALIGN/RUN은 현재 TODO placeholder)에 goal을 보내고, 결과도 앱 명령/
+- CAL/ALIGN/RUN은 상태 진입 시 액션 서버(`calibrate`/`align`/`run` — CAL/RUN은
+  구현됨, ALIGN은 현재 TODO placeholder)에 goal을 보내고, 결과도 앱 명령/
   에러와 같은 큐에 합류시켜 먼저 끝나는 쪽으로 outcome 결정(`STATE_ACTIONS`,
   `wait_for_outcome()`). YASMIN `Concurrence`는 "모든 자식 완료 후 조합이
   매칭돼야 하는" AND 방식이라 이 fan-in 용도에 안 맞아, 기존
   `ControlAndErrorMonitor` 큐 방식을 그대로 확장해 씀.
-- CAL 액션 성공으로 인한 self-loop(자기 자신에 재전이)는 다음 진입 때
+- CAL/RUN 액션 성공으로 인한 self-loop(자기 자신에 재전이)는 다음 진입 때
   goal의 `self_loop` 필드로 액션 서버에 알려진다 — 액션 서버는 이걸로
   "방금 성공해서 자동으로 다시 들어온 것"과 "다른 상태에 있다가 재진입한
-  것"을 구분해 전자는 재측정 없이 대기만 한다.
+  것"을 구분해 전자는 재측정/재주행 없이 대기만 한다(RUN 완주 후에도
+  sw_bits가 안 내려가면 처음부터 재주행해버리던 버그 수정).
 
 ## 클래스 구성
 - `ControlAndErrorMonitor`: 앱 명령/내부 에러/액션 결과 세 이벤트를 판단해
@@ -86,8 +87,9 @@ ALLOWED_TARGETS = {
 
 # CAL/ALIGN/RUN처럼 실제 작업이 있는 상태 -> (액션 타입, 액션 이름).
 # 나머지(STOP/KEY)는 감시만 한다. CAL은 calibration_action_server.py가
-# GPS-IMU 비교로 실제 캘리브레이션을 수행하고, ALIGN/RUN은 아직 TODO
-# placeholder(즉시 성공 리턴) — 실제 알고리즘은 미정.
+# GPS-IMU 비교로 실제 캘리브레이션을, RUN은 run_action_server.py가 선택된
+# 커버리지 경로의 Nav2 주행을 수행한다. ALIGN은 아직 TODO placeholder(즉시
+# 성공 리턴) — 실제 알고리즘은 미정.
 STATE_ACTIONS = {
     "CAL": (Calibrate, "calibrate"),
     "ALIGN": (Align, "align"),
@@ -250,11 +252,15 @@ class ControlAndErrorMonitor:
 
                     result_future.add_done_callback(_on_result)
 
-                # CAL은 self-loop(대기만)와 외부 재진입(실제 캘리브레이션)을
-                # 구분해야 해서 goal에 그 판단을 실어 보낸다 — 다른 액션
-                # 타입은 아직 이 구분이 필요 없어 빈 Goal() 그대로.
+                # CAL/RUN은 self-loop(대기만)와 외부 재진입(실제 수행)을
+                # 구분해야 해서 goal에 그 판단을 실어 보낸다 — RUN이 이게
+                # 없으면 완주 후에도 sw_bits가 RUN이면 매번 처음부터
+                # 재주행해버린다(확인된 버그). ALIGN은 아직 이 구분이
+                # 필요 없어 빈 Goal() 그대로.
                 if action_type is Calibrate:
                     goal = Calibrate.Goal(self_loop=is_self_loop)
+                elif action_type is Run:
+                    goal = Run.Goal(self_loop=is_self_loop)
                 else:
                     goal = action_type.Goal()
                 client.send_goal_async(goal).add_done_callback(_on_goal_response)
