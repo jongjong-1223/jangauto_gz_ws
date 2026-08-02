@@ -1,8 +1,12 @@
 # ALIGN 상태 진입 시 mission_state_machine.py가 호출하는 정렬 액션.
-# 헤딩만 맞추는지 특정 위치까지 이동하는지, 목표 자세를 어디서 얻는지는
-# 아직 미정 — 지금은 goal에 필드 없이 "정렬 시작"만 의미한다.
+# 선택된 커버리지 경로(/jangauto_mission/selected_coverage_path)의 waypoints[0]
+# (kind="start")까지 Nav2로 이동한다 — RUN은 이 지점을 제외한 나머지만 주행한다.
 
-# goal (필드 없음 — 목표 자세 표현 방식이 정해지면 추가)
+# self_loop: 액션 성공 직후 YASMIN self-loop로 ALIGN에 곧바로 재진입하는
+# 경우 true — 이땐 다시 이동하지 않고 대기만 한다(CAL/RUN과 동일한 패턴,
+# 안 그러면 완주 후 sw_bits가 계속 ALIGN이어도 매번 재이동해버린다).
+# 다른 상태에서 ALIGN으로 (다시) 들어온 경우는 false — 실제로 이동한다.
+bool self_loop
 ---
 # result
 bool success

@@ -11,16 +11,16 @@
   새 결과를 계산한다(이전 결과를 참조하지 않음). ALIGN/RUN 중에는
   `goal_callback`에서 거부한다 — 실주행 중에 계산 자원을 뺏기지 않고,
   주행 중인 경로가 바뀌는 레이스도 원천 차단하기 위함.
-- 결과(좌측/우측 시작 두 후보)는 액션 result로만 나간다 — 선택된 이후의
-  경로는 `run_action_server.py`가 별도로 구독하는 latched 토픽
-  (`/jangauto_mission/selected_coverage_path`)으로 전달되므로, 이 서버는
-  "계산해서 두 후보를 돌려주는" 책임만 진다.
+- 결과(near/far 두 후보 — 어느 두둑부터 도는지만 다름)는 액션 result로만
+  나간다 — 선택된 이후의 경로는 `run_action_server.py`가 별도로 구독하는
+  latched 토픽(`/jangauto_mission/selected_coverage_path`)으로 전달되므로,
+  이 서버는 "계산해서 두 후보를 돌려주는" 책임만 진다.
 
 ## 동작 순서 (goal 하나당)
 1. `goal_callback`: 현재 `/robot_status.current_state`가 STOP/KEY/CAL이
    아니거나 이미 goal이 진행 중이면 거부
 2. `execute_callback`: goal의 Polygon/edge_safety_dist 길이 검증
-3. `coverage_path_lib.run_pipeline()` 호출(좌측/우측 두 버전)
+3. `coverage_path_lib.run_pipeline()` 호출(near/far 두 버전 + 헤드랜드 코너)
 4. 각 버전을 `CoveragePath` 메시지로 변환해 result에 담아 반환
 """
 
@@ -30,6 +30,7 @@ from rclpy.action import ActionServer, GoalResponse
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from geometry_msgs.msg import Point32
 
 from jangauto_msg.action import GenerateCoveragePath
 from jangauto_msg.msg import CoveragePath, Status, Waypoint
@@ -58,6 +59,11 @@ def _waypoints_to_msg(waypoints_world: list) -> list:
             row_index=wp['row_index'],
         ))
     return out
+
+
+def _corners_to_msg(corners: list) -> list:
+    """헤드랜드 사각형 꼭짓점 [(x,y) x4] -> `Point32[4]`."""
+    return [Point32(x=float(cx), y=float(cy), z=0.0) for cx, cy in corners]
 
 
 class CoveragePathActionServer(Node):
@@ -134,14 +140,20 @@ class CoveragePathActionServer(Node):
             goal_handle.abort()
             return GenerateCoveragePath.Result(success=False, message=f'경로 생성 실패: {e}')
 
-        left = CoveragePath(
-            waypoints=_waypoints_to_msg(result['waypoints_start_left']),
+        # 헤드랜드 코너는 near/far 후보 공통값이지만, rosidl 배열 필드가 참조를
+        # 공유하지 않도록 후보마다 새로 변환한다.
+        near = CoveragePath(
+            waypoints=_waypoints_to_msg(result['waypoints_first_row_near']),
             rect_length=result['rect_L'], rect_width=result['rect_W'],
-            work_len=result['work_len'], n_ridges=result['n_ridges'], start_side='left')
-        right = CoveragePath(
-            waypoints=_waypoints_to_msg(result['waypoints_start_right']),
+            work_len=result['work_len'], n_ridges=result['n_ridges'], first_row_side='near',
+            start_headland_corners=_corners_to_msg(result['start_headland_corners']),
+            far_headland_corners=_corners_to_msg(result['far_headland_corners']))
+        far = CoveragePath(
+            waypoints=_waypoints_to_msg(result['waypoints_first_row_far']),
             rect_length=result['rect_L'], rect_width=result['rect_W'],
-            work_len=result['work_len'], n_ridges=result['n_ridges'], start_side='right')
+            work_len=result['work_len'], n_ridges=result['n_ridges'], first_row_side='far',
+            start_headland_corners=_corners_to_msg(result['start_headland_corners']),
+            far_headland_corners=_corners_to_msg(result['far_headland_corners']))
 
         self.get_logger().info(
             f"[CoveragePath] rect={result['rect_L']:.2f}x{result['rect_W']:.2f}m "
@@ -149,7 +161,7 @@ class CoveragePathActionServer(Node):
 
         goal_handle.succeed()
         return GenerateCoveragePath.Result(
-            success=True, message='', candidate_paths=[left, right])
+            success=True, message='', candidate_paths=[near, far])
 
 
 def main():

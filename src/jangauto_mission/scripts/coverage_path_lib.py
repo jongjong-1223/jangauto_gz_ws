@@ -15,7 +15,9 @@
 4. 사각형을 원래 좌표계로 회전 복원
 5. 사각형 크기에서 헤드랜드 길이를 빼 실제 작업 길이 산출, 두둑 간격으로
    두둑 개수 산출
-6. 두둑 라인 + ㄹ자 경로(좌측/우측 시작 두 버전) 생성, 원래 좌표계로 복원
+6. 두둑 라인 + ㄹ자 경로(near/far 두 버전 — 어느 두둑부터 도는지만 다르고,
+   둘 다 출발 헤드랜드에서 +yaw 방향으로 출발) 생성, 원래 좌표계로 복원
+7. 헤드랜드 사각형 2개(출발쪽/반대쪽) 꼭짓점을 원래 좌표계로 복원해 산출
 
 ## 주의
 다각형 오프셋은 변을 따라 평행 이동한 뒤 인접 변끼리 교차시키는 방식이라
@@ -212,10 +214,12 @@ def compute_ridge_lines(x_min, x_max, y_min, y_max, headland_len, ridge_spacing)
     return ridge_lines, work_len, n_ridges
 
 
-def build_waypoints(x_min, x_max, y_min, y_max, headland_len, ridge_spacing, start_side="left"):
+def build_waypoints(x_min, x_max, y_min, y_max, headland_len, ridge_spacing, first_row_side="near"):
     """ㄹ자 경로를 라벨 붙은 웨이포인트 시퀀스로 생성(회전 좌표계, 헤드랜드
-    중심 기준). start_side="left"면 왼쪽 헤드랜드에서 시작해 오른쪽으로 첫
-    작업, "right"면 반대.
+    중심 기준). 두 후보 모두 출발 헤드랜드(x_min쪽)에서 +yaw 방향(오른쪽)으로
+    첫 작업을 시작한다 — first_row_side="near"면 y_min에 가까운 두둑부터,
+    "far"면 y_max에 가까운 두둑부터 순서대로 돈다(어느 두둑을 먼저 도는지만
+    다름, 즉 웨이포인트 좌표 집합은 동일하고 연결 순서만 달라짐).
 
     각 웨이포인트 kind:
       - "start"      : 전체 경로의 시작점(첫 헤드랜드 중심)
@@ -228,13 +232,15 @@ def build_waypoints(x_min, x_max, y_min, y_max, headland_len, ridge_spacing, sta
     ridge_lines, work_len, n_ridges = compute_ridge_lines(
         x_min, x_max, y_min, y_max, headland_len, ridge_spacing)
     ridge_ys = [rl[0] for rl in ridge_lines]
+    if first_row_side == "far":
+        ridge_ys = ridge_ys[::-1]
     x_work_start = x_min + headland_len
     x_work_end = x_max - headland_len
     left_c = x_min + headland_len / 2
     right_c = x_max - headland_len / 2
 
     waypoints = []
-    going_right = (start_side == "left")
+    going_right = True  # 두 후보 모두 출발 헤드랜드(x_min쪽)에서 +yaw 방향으로 출발
 
     for i, y in enumerate(ridge_ys):
         entry_c = left_c if going_right else right_c
@@ -308,9 +314,9 @@ def enrich_waypoints_world(waypoints_rot, yaw_rad):
 
 def run_pipeline(polygon, edge_safety_dist, robot_radius, yaw_deg,
                   ridge_spacing, headland_len, cell_size=0.2):
-    """다각형+파라미터 -> 좌측/우측 시작 두 웨이포인트 시퀀스(월드 좌표) +
-    사각형/작업길이/두둑개수 요약. `coverage_path_action_server.py`가 호출하는
-    유일한 진입점."""
+    """다각형+파라미터 -> near/far 두 웨이포인트 시퀀스(월드 좌표) + 헤드랜드
+    사각형 2개(출발쪽/반대쪽) 꼭짓점 + 사각형/작업길이/두둑개수 요약.
+    `coverage_path_action_server.py`가 호출하는 유일한 진입점."""
     yaw_rad = np.deg2rad(yaw_deg)
 
     # 안전거리 + 로봇 반지름을 합쳐서 로봇 중심 진입 한계선을 한 번에 계산.
@@ -321,20 +327,34 @@ def run_pipeline(polygon, edge_safety_dist, robot_radius, yaw_deg,
     rotated_entry = rotate_points(entry_limit, -yaw_rad)
     x_min, x_max, y_min, y_max = best_inscribed_rectangle(rotated_entry, cell_size)
 
-    # 좌/우 두 시작 버전으로 웨이포인트 생성 후 원래 좌표계로 복원.
-    waypoints_left_rot, _, work_len, n_ridges = build_waypoints(
-        x_min, x_max, y_min, y_max, headland_len, ridge_spacing, start_side="left")
-    waypoints_right_rot, _, _, _ = build_waypoints(
-        x_min, x_max, y_min, y_max, headland_len, ridge_spacing, start_side="right")
+    # near(y_min쪽 두둑부터)/far(y_max쪽 두둑부터) 두 버전으로 웨이포인트
+    # 생성 후 원래 좌표계로 복원. 둘 다 출발 헤드랜드에서 +yaw로 출발한다.
+    waypoints_near_rot, _, work_len, n_ridges = build_waypoints(
+        x_min, x_max, y_min, y_max, headland_len, ridge_spacing, first_row_side="near")
+    waypoints_far_rot, _, _, _ = build_waypoints(
+        x_min, x_max, y_min, y_max, headland_len, ridge_spacing, first_row_side="far")
 
-    waypoints_left_world = enrich_waypoints_world(waypoints_left_rot, yaw_rad)
-    waypoints_right_world = enrich_waypoints_world(waypoints_right_rot, yaw_rad)
+    waypoints_near_world = enrich_waypoints_world(waypoints_near_rot, yaw_rad)
+    waypoints_far_world = enrich_waypoints_world(waypoints_far_rot, yaw_rad)
+
+    # 헤드랜드 사각형 2개(출발쪽 x_min..x_work_start, 반대쪽 x_work_end..x_max,
+    # 폭은 항상 y_min..y_max 전체) — 두 후보 공통(사각형 자체는 후보와 무관).
+    # 회전만으로 원래 좌표계 복원 가능(위 rotate_points(entry_limit, -yaw_rad)와
+    # 마찬가지로 오프셋/센트로이드 이동 없는 원점 기준 순수 회전이기 때문).
+    x_work_start = x_min + headland_len
+    x_work_end = x_max - headland_len
+    start_rect_rot = [(x_min, y_min), (x_work_start, y_min), (x_work_start, y_max), (x_min, y_max)]
+    far_rect_rot = [(x_work_end, y_min), (x_max, y_min), (x_max, y_max), (x_work_end, y_max)]
+    start_headland_corners = [(float(px), float(py)) for px, py in rotate_points(start_rect_rot, yaw_rad)]
+    far_headland_corners = [(float(px), float(py)) for px, py in rotate_points(far_rect_rot, yaw_rad)]
 
     return {
-        "waypoints_start_left": waypoints_left_world,
-        "waypoints_start_right": waypoints_right_world,
+        "waypoints_first_row_near": waypoints_near_world,
+        "waypoints_first_row_far": waypoints_far_world,
         "rect_L": x_max - x_min,
         "rect_W": y_max - y_min,
         "work_len": work_len,
         "n_ridges": n_ridges,
+        "start_headland_corners": start_headland_corners,
+        "far_headland_corners": far_headland_corners,
     }

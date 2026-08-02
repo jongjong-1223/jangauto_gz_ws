@@ -7,7 +7,7 @@
   여러 소스가 동시에 `cmd_vel`을 발행해 서로 덮어쓰며 충돌한다.
 - 범용 `twist_mux`(우선순위+타임아웃만 봄)와 달리, `mission_state_machine.py`가
   이미 발행 중인 `/robot_status`(현재 모드)를 그대로 재사용해 미션 상태에
-  맞는 소스만 통과시킨다 — RUN이 아니면 nav2 명령을 걸러내는 식.
+  맞는 소스만 통과시킨다 — RUN/ALIGN이 아니면 nav2 명령을 걸러내는 식.
 - `cmd_vel_stop`은 모드와 무관하게 항상 최우선 — 안전정지 신호가 들어오면
   그 즉시 정지 명령으로 덮어쓴다.
 - KEY 모드는 소스가 2개(수동조작 `cmd_vel_manual` + `app_websocket_bridge.py`가
@@ -24,8 +24,8 @@
   운용으로 대신한다.
 
 ## 입력/출력
-- 구독: `cmd_vel_nav_out`(nav2 최종 출력 — RUN의 자율주행뿐 아니라 KEY/CAL에서
-  MoveRequest로 실행 중인 목표 지점 이동도 여기로 나온다), `cmd_vel_manual`
+- 구독: `cmd_vel_nav_out`(nav2 최종 출력 — RUN/ALIGN의 자율주행뿐 아니라
+  KEY/CAL에서 MoveRequest로 실행 중인 목표 지점 이동도 여기로 나온다), `cmd_vel_manual`
   (조이스틱 변환값, KEY 모드에서 조작 중일 때만 옴), `cmd_vel_calibration`
   (CAL 캘리브레이션 열린루프 주행, CAL 모드에서 실제 측정 중일 때만 옴),
   `cmd_vel_stop`(안전정지 트리거, 내용은 안 보고 수신 자체만 봄),
@@ -51,9 +51,14 @@ from geometry_msgs.msg import Twist
 from jangauto_msg.msg import Status
 
 # 주행이 허용되는 모드 -> 그 모드에서 통과시킬 입력 토픽들(우선순위 순서 —
-# 리스트 앞쪽일수록 우선). 나머지 모드(STOP/ALIGN)는 목록에 없으므로 항상 정지.
+# 리스트 앞쪽일수록 우선). 나머지 모드(STOP)는 목록에 없으므로 항상 정지.
 MODE_TO_SOURCE_TOPICS = {
     "RUN": ["cmd_vel_nav_out"],
+    # ALIGN도 RUN과 동일하게 선택된 경로의 첫 웨이포인트로 Nav2 자율주행하는
+    # 상태라 cmd_vel_nav_out을 통과시켜야 한다(align_action_server.py가
+    # NavigateToPose를 실제로 호출함 — 예전 더미 시절엔 움직일 필요가 없어
+    # 목록에 없었다).
+    "ALIGN": ["cmd_vel_nav_out"],
     "KEY": ["cmd_vel_manual", "cmd_vel_nav_out"],
     # cmd_vel_calibration: calibration_action_server.py가 CAL 전진/후진
     # 캘리브레이션 주행에 쓰는 전용 열린루프 소스(collision_monitor 안

@@ -61,25 +61,33 @@ ack은 "접수했다"가 아니라 "계산까지 마쳤다"는 뜻이다 — 성
   "msg_id": "<로봇이 새로 발급한 결과 ID>",
   "paths": [
     {
-      "start_side": "left",
+      "first_row_side": "near",
       "rect_length": 38.2, "rect_width": 24.5, "work_len": 34.2, "n_ridges": 20,
+      "start_headland_corners": [{"x": 1.2, "y": 0.0}, {"x": 2.7, "y": 0.0}, {"x": 2.7, "y": 24.5}, {"x": 1.2, "y": 24.5}],
+      "far_headland_corners": [{"x": 37.7, "y": 0.0}, {"x": 39.2, "y": 0.0}, {"x": 39.2, "y": 24.5}, {"x": 37.7, "y": 24.5}],
       "waypoints": [
         {"x": 1.2, "y": 3.4, "yaw": 0.14, "turn_angle": 0.0, "dist_to_next": 12.3, "kind": "start", "row_index": 0},
         {"...": "..."}
       ]
     },
-    {"start_side": "right", "...": "..."}
+    {"first_row_side": "far", "...": "..."}
   ]
 }
 ```
-- `paths`는 항상 2개(`paths[0]`=좌측 시작, `paths[1]`=우측 시작). 각 `waypoints`
-  배열에 그 경로의 **전체 지점이 순서대로 다 들어있다** — 앱이 두 후보를 화면에
-  그려서 사용자에게 보여주는 것과, 선택 후 그대로 주행하는 것 둘 다 이 배열
-  하나로 충분하다.
+- `paths`는 항상 2개(`paths[0]`=near, `paths[1]`=far). **둘 다 같은 출발 헤드랜드
+  에서 같은 방향(+yaw)으로 첫 이동을 시작하고, 어느 두둑 줄부터 도는지만
+  다르다**(near=가까운 줄부터, far=먼 줄부터) — 예전의 "좌/우 시작"(반대 방향
+  출발) 개념이 아니다. 각 `waypoints` 배열에 그 경로의 **전체 지점이 순서대로
+  다 들어있다** — 앱이 두 후보를 화면에 그려서 사용자에게 보여주는 것과,
+  선택 후 그대로 주행하는 것 둘 다 이 배열 하나로 충분하다.
 - `kind`: `start`/`work_start`/`work_end`/`turn_out`/`turn_in`/`end` — 두둑 진입/작업/
   헤드랜드 이동/종료 구간을 구분(선을 다르게 그리고 싶을 때 참고).
 - `rect_length`/`rect_width`/`work_len`/`n_ridges`: UI에 "N개 두둑, 작업길이 M m"
   같은 요약을 보여줄 때 쓰는 부가 정보(주행 자체엔 불필요).
+- `start_headland_corners`/`far_headland_corners`: 헤드랜드 사각형 2개(출발쪽/
+  반대쪽)의 꼭짓점 4개씩(map 프레임 좌표). **두 후보(`paths[0]`/`paths[1]`)에서
+  값이 동일** — 헤드랜드 사각형 자체는 어느 줄부터 도는지와 무관하게 하나로
+  고정되기 때문. 폴리곤으로 그대로 그리면 됨.
 - **재전송**: 앱이 `app_ack`을 안 보내면 최대 3회, 1초 간격으로 재전송한다.
   단, 아래 `select_coverage_path`를 이 `msg_id`로 보내면 그 자체가 수신 확인을
   겸하므로 별도 `app_ack`이 없어도 재전송이 멈춘다. `map_data`와 달리 재연결
@@ -107,7 +115,7 @@ ack은 "접수했다"가 아니라 "계산까지 마쳤다"는 뜻이다 — 성
   (`msg_id`/`ref_msg_id`를 분리한 이유: 다른 명령처럼 `msg_id`를 매번 새로
   만드는 습관과 충돌하지 않게 하기 위함 — 참조가 필요한 필드만 이름을 다르게
   둠.)
-- `path_index`: `0`(좌측 시작) 또는 `1`(우측 시작).
+- `path_index`: `0`(near, 가까운 줄부터) 또는 `1`(far, 먼 줄부터).
 
 **로봇 → 앱**
 ```json
@@ -130,6 +138,35 @@ RUN으로 전환하면 그 경로를 그대로 주행한다.** 선택된 경로�
 "한 번이라도 경로를 선택했는가"를 앱이 미리 알 수 있게 한다(RUN 전환 전
 UI 가드용).
 
+## 4. ALIGN 상태 의미 변경 — no-op → 실제 주행
+
+- 과거: ALIGN은 진입 즉시 무조건 성공하는 더미(placeholder)였다.
+- 현재: **선택된 경로의 첫 웨이포인트(`waypoints[0]`, kind=`start`)까지 Nav2로
+  실제로 이동한다.** 거리에 따라 수십 초~분 단위로 소요될 수 있다.
+- 앱 영향:
+  - ALIGN 진입 전 반드시 `select_coverage_path`로 경로를 먼저 선택해야 한다.
+    선택 없이 ALIGN에 진입하면 즉시 실패해 `STOP`으로 떨어지고(`in_error`),
+    이 에러는 로봇을 재시작해야 풀리는 영구 상태다 — 앱은 경로 미선택 상태에서
+    ALIGN(sw_bits)을 보내지 않도록 UI에서 막아야 한다(`path_selected` 필드,
+    3번 참고).
+  - **ALIGN 진입도 CAL이 한 번이라도 성공하기 전에는 거부된다** — 캘리브레이션
+    완료 전 ALIGN 요청은 조용히 무시되며(`current_state`가 안 바뀜), 별도 에러
+    응답은 없다.
+  - ALIGN 체류 시간이 길어지므로 진행 중임을 보여주는 UI가 필요할 수 있다.
+  - ALIGN 이동 중 다른 모드를 요청하면 Nav2 이동이 정상적으로 취소되고
+    로봇이 즉시 멈춘다(에러 아님, 그냥 STOP으로 전이).
+  - ALIGN 성공 후 sw_bits를 ALIGN으로 유지하면(self-loop) 재이동 없이 대기만
+    한다.
+
+## 5. RUN 동작 변경 — 시작점은 더 이상 RUN이 안 감
+
+- RUN은 이제 `waypoints[0]`(시작점, ALIGN이 이미 이동을 담당)을 제외한
+  `waypoints[1:]`부터 주행한다.
+- **`coverage_path_result`의 `waypoints` 배열 자체는 그대로다 — JSON 스키마
+  변경 없음.** 순수하게 로봇 측 실행이 ALIGN(첫 지점)과 RUN(나머지)으로
+  나뉘는 것뿐이라, 앱이 진행률을 자체 계산 중이라면 "RUN의 진행 인덱스는
+  전체 `waypoints` 배열 기준 1번 인덱스부터 시작한다"는 점만 반영하면 된다.
+
 ## 시퀀스 요약
 
 ```
@@ -138,8 +175,10 @@ UI 가드용).
 로봇 -> coverage_path_result (후보 2개, 재전송 가능)
 앱 -> select_coverage_path (path_index 선택)
 로봇 -> select_coverage_path_ack (accepted)
-앱 -> (sw_bits를 RUN으로) control_state
-로봇 -> 선택된 경로를 Nav2로 주행
+앱 -> (sw_bits를 ALIGN으로) control_state   # CAL 완료 필요, 경로 선택 필요
+로봇 -> 선택된 경로의 시작 웨이포인트까지 Nav2로 이동
+앱 -> (sw_bits를 RUN으로) control_state     # ALIGN에서만 진입 가능
+로봇 -> 나머지 웨이포인트를 Nav2로 주행
 ```
 
 ## 변경 이력
@@ -165,3 +204,20 @@ UI 가드용).
   이후 바로 `connect()`)이 이전 연결의 정상 종료를 기다리지 않아 일시적으로
   소켓 2개가 동시에 열리는 현상도 함께 발견됨 — 로봇 쪽 변경은 아니지만 앱
   팀에 별도 공유 필요.
+
+### 2026-08-02: 경로 후보 재정의(near/far) + 헤드랜드 코너 전달 + ALIGN 실주행화
+- **배경**: 경로 후보 2개를 "좌/우 반대 방향 출발"이 아니라 "같은 방향(+yaw)
+  출발, 어느 두둑 줄부터 도는지만 다름"으로 바꿔달라는 요청. 앱이 헤드랜드
+  영역을 화면에 그릴 수 있도록 좌표도 같이 필요. ALIGN을 실제 "경로 시작점
+  으로 이동"하는 기능으로 채우면서 RUN과 역할을 분담.
+- **변경**: `coverage_path_result.paths[]`의 `start_side`("left"/"right") 필드
+  삭제 → `first_row_side`("near"/"far") 신설(1번 섹션 참고). `start_headland_corners`
+  / `far_headland_corners` 필드 신설. ALIGN이 실제 Nav2 주행을 수행하도록 변경
+  (4번 섹션). RUN이 `waypoints[0]`을 건너뛰도록 변경(5번 섹션).
+- **앱 측 반영 필요**: `start_side` 파싱 제거 → `first_row_side` 파싱 추가(값
+  의미 변경 포함, UI 라벨도 "좌/우 시작" → "가까운 줄/먼 줄부터"로 교체),
+  헤드랜드 코너 2개 배열 렌더링 추가, ALIGN 대기 UI 추가, `select_coverage_path`
+  가 ALIGN 진입보다 항상 먼저 오도록 흐름 강제, CAL 미완료 시 ALIGN 무반응
+  케이스에 대한 안내.
+- 시뮬레이션(Gazebo+Nav2) 전체 스택에서 앱으로 직접 CAL→경로 선택→ALIGN→RUN
+  전 과정, ALIGN/RUN 취소, ALIGN self-loop까지 실증 검증 완료.

@@ -866,11 +866,17 @@ class AppWebSocketBridge(Node):
     @staticmethod
     def _coverage_path_to_json(path: CoveragePath) -> dict:
         return {
-            'start_side': path.start_side,
+            'first_row_side': path.first_row_side,
             'rect_length': path.rect_length,
             'rect_width': path.rect_width,
             'work_len': path.work_len,
             'n_ridges': path.n_ridges,
+            'start_headland_corners': [
+                {'x': c.x, 'y': c.y} for c in path.start_headland_corners
+            ],
+            'far_headland_corners': [
+                {'x': c.x, 'y': c.y} for c in path.far_headland_corners
+            ],
             'waypoints': [
                 {
                     'x': wp.x, 'y': wp.y, 'yaw': wp.yaw, 'turn_angle': wp.turn_angle,

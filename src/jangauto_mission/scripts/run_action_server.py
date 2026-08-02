@@ -10,6 +10,11 @@
   RUN goal이 들어오면 그 시점의 캐시를 그대로 주행한다. 캐시는 성공적인
   주행 뒤에도 지우지 않는다 — 같은 경로를 다시 RUN해도 재선택 없이 그대로
   재사용 가능(사용자 확정 사항).
+- `waypoints[0]`(시작점)은 RUN이 아니라 ALIGN(`align_action_server.py`)이
+  먼저 이동을 담당한다 — RUN은 `waypoints[1:]`부터 주행한다. 앱으로 나가는
+  `waypoints` 배열 자체는 그대로(스키마 변경 없음), 로봇 측 실행만 ALIGN과
+  RUN으로 나뉜다. mission_state_machine.py의 전이 규칙상 RUN은 ALIGN을 거쳐야만
+  진입 가능하므로, RUN 시작 시점엔 로봇이 항상 waypoints[0]에 도착해 있다.
 - 웨이포인트를 **하나씩** Nav2 `NavigateToPose`로 순서대로 이동시킨다 —
   지점 하나에 goal 하나, 성공해야 다음 지점의 goal을 보낸다(배치로 묶어서
   한 번에 보내지 않음). 이렇게 지점 단위로 끊어둔 이유는 나중에
@@ -44,9 +49,10 @@
 ## 동작 순서 (goal 하나당)
 1. `self_loop=true`면 재주행 없이 취소될 때까지 대기만 하고 리턴
 2. 캐시된 `CoveragePath`가 없으면 즉시 실패 리턴
-3. 웨이포인트를 순서대로 하나씩 `NavigateToPose`로 이동(회전이 필요한
-   지점은 그 goal에 한해 `yaw_goal_tolerance`를 타이트하게) -> 다음
-   웨이포인트로
+3. `waypoints[1:]`(시작점 제외, ALIGN이 이미 주행함)을 순서대로 하나씩
+   `NavigateToPose`로 이동(회전이 필요한 지점은 그 goal에 한해
+   `yaw_goal_tolerance`를 타이트하게) -> 다음 웨이포인트로. 남은 지점이
+   없으면(총 1개뿐이던 경로) 즉시 성공 처리
 4. cancel 요청 시 진행 중인 Nav2 sub-goal을 취소하고 Run goal도 canceled 처리
 5. Nav2 sub-goal이 실패(취소가 아닌 abort/reject 등)로 끝나면 즉시 Run 전체를
    실패로 중단 — 실패한 구간을 못 본 척 다음 단계로 넘어가지 않는다.
@@ -140,7 +146,7 @@ class RunActionServer(Node):
         self._selected_path = msg
         self.get_logger().info(
             f'[Run] Selected coverage path updated: {len(msg.waypoints)} waypoint(s), '
-            f'start_side={msg.start_side}')
+            f'first_row_side={msg.first_row_side}')
 
     def _cancel_callback(self, goal_handle) -> CancelResponse:
         # rclpy ActionServer 기본값은 REJECT라 명시적으로 ACCEPT해야 취소가
@@ -156,8 +162,11 @@ class RunActionServer(Node):
             goal_handle.abort()
             return Run.Result(success=False, message='선택된 경로 없음')
 
-        waypoints = path.waypoints
+        waypoints = path.waypoints[1:]  # [0]은 ALIGN이 이미 주행함
         n = len(waypoints)
+        if n == 0:
+            goal_handle.succeed()
+            return Run.Result(success=True, message='ALIGN이 유일한 웨이포인트를 이미 주행함')
 
         try:
             for i, wp in enumerate(waypoints):
@@ -174,7 +183,7 @@ class RunActionServer(Node):
                 # 커스텀 동작(예: 작업 장치 제어)은 여기에 끼워 넣는다.
 
             goal_handle.succeed()
-            return Run.Result(success=True, message=f'{n}개 웨이포인트 주행 완료')
+            return Run.Result(success=True, message=f'{n}개 웨이포인트 주행 완료(시작점은 ALIGN 담당)')
         finally:
             # 성공/실패/취소 어느 경로든 controller_server의 공유 파라미터를
             # 반드시 기본값으로 되돌린다 — 안 그러면 이후 다른 Nav2 goal에도

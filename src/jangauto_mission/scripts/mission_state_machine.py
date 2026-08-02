@@ -16,17 +16,20 @@
   조립·명령별 개별 응답(ack)은 이제 이 노드의 책임이 아니다 — `app_websocket_bridge.py`가
   `/robot_status`를 구독해서 직접 조립해 앱에 보낸다(ack 없이 이 토픽의 `current_state`
   변화만으로 앱이 수락 여부를 판단).
-- CAL/ALIGN/RUN은 상태 진입 시 액션 서버(`calibrate`/`align`/`run` — CAL/RUN은
-  구현됨, ALIGN은 현재 TODO placeholder)에 goal을 보내고, 결과도 앱 명령/
-  에러와 같은 큐에 합류시켜 먼저 끝나는 쪽으로 outcome 결정(`STATE_ACTIONS`,
-  `wait_for_outcome()`). YASMIN `Concurrence`는 "모든 자식 완료 후 조합이
-  매칭돼야 하는" AND 방식이라 이 fan-in 용도에 안 맞아, 기존
-  `ControlAndErrorMonitor` 큐 방식을 그대로 확장해 씀.
-- CAL/RUN 액션 성공으로 인한 self-loop(자기 자신에 재전이)는 다음 진입 때
-  goal의 `self_loop` 필드로 액션 서버에 알려진다 — 액션 서버는 이걸로
+- CAL/ALIGN/RUN은 상태 진입 시 액션 서버(`calibrate`/`align`/`run`, 모두
+  구현됨)에 goal을 보내고, 결과도 앱 명령/에러와 같은 큐에 합류시켜 먼저
+  끝나는 쪽으로 outcome 결정(`STATE_ACTIONS`, `wait_for_outcome()`). YASMIN
+  `Concurrence`는 "모든 자식 완료 후 조합이 매칭돼야 하는" AND 방식이라 이
+  fan-in 용도에 안 맞아, 기존 `ControlAndErrorMonitor` 큐 방식을 그대로
+  확장해 씀.
+- CAL/ALIGN/RUN 액션 성공으로 인한 self-loop(자기 자신에 재전이)는 다음 진입
+  때 goal의 `self_loop` 필드로 액션 서버에 알려진다 — 액션 서버는 이걸로
   "방금 성공해서 자동으로 다시 들어온 것"과 "다른 상태에 있다가 재진입한
-  것"을 구분해 전자는 재측정/재주행 없이 대기만 한다(RUN 완주 후에도
+  것"을 구분해 전자는 재측정/재이동/재주행 없이 대기만 한다(RUN 완주 후에도
   sw_bits가 안 내려가면 처음부터 재주행해버리던 버그 수정).
+- STOP/KEY/CAL에서 ALIGN으로 가려면 CAL이 한 번이라도 성공했어야 한다
+  (`/jangauto_mission/calibration_complete` 래치 구독 — 안 그러면 ALIGN 요청은
+  규칙 위반과 동일하게 조용히 무시된다).
 
 ## 클래스 구성
 - `ControlAndErrorMonitor`: 앱 명령/내부 에러/액션 결과 세 이벤트를 판단해
@@ -52,7 +55,7 @@ import queue
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from jangauto_msg.msg import Status
 
@@ -87,9 +90,9 @@ ALLOWED_TARGETS = {
 
 # CAL/ALIGN/RUN처럼 실제 작업이 있는 상태 -> (액션 타입, 액션 이름).
 # 나머지(STOP/KEY)는 감시만 한다. CAL은 calibration_action_server.py가
-# GPS-IMU 비교로 실제 캘리브레이션을, RUN은 run_action_server.py가 선택된
-# 커버리지 경로의 Nav2 주행을 수행한다. ALIGN은 아직 TODO placeholder(즉시
-# 성공 리턴) — 실제 알고리즘은 미정.
+# GPS-IMU 비교로 실제 캘리브레이션을, ALIGN은 align_action_server.py가 선택된
+# 커버리지 경로의 시작점까지 Nav2 이동을, RUN은 run_action_server.py가 그
+# 시작점을 제외한 나머지 구간의 Nav2 주행을 수행한다.
 STATE_ACTIONS = {
     "CAL": (Calibrate, "calibrate"),
     "ALIGN": (Align, "align"),
@@ -98,6 +101,7 @@ STATE_ACTIONS = {
 
 CONTROL_STATE_TOPIC = "/app/control_state"          # 구독: app_websocket_bridge가 재발행하는 앱 명령
 ERROR_TOPIC = "/jangauto_mission/error"             # 구독: 내부 에러 보고 채널
+CALIBRATION_COMPLETE_TOPIC = "/jangauto_mission/calibration_complete"  # 구독: CAL 1회 이상 성공 여부(latched, 영구 래치)
 STATUS_TOPIC = "/robot_status"                      # 발행: 현재 결정된 모드(ROS 전역, typed) —
                                                      # app_websocket_bridge.py가 이걸 구독해 앱 JSON을 직접 조립함
 
@@ -141,10 +145,25 @@ class ControlAndErrorMonitor:
         # 구분해 goal에 실어 보내는 데 사용(다른 상태는 아직 구분 안 함).
         self._last_action_success_state = None
 
+        # CAL이 한 번이라도 성공하면 True로 래치(calibration_action_server.py가
+        # 발행, 세션 중 리셋되지 않음) — ALIGN 진입 게이트로 쓴다.
+        self._calibration_complete = False
+        latched_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self._calibration_complete_sub = self._node.create_subscription(
+            Bool, CALIBRATION_COMPLETE_TOPIC, self._on_calibration_complete, latched_qos)
+
         self._control_sub = self._node.create_subscription(
             String, CONTROL_STATE_TOPIC, self._on_control, 10)
         self._error_sub = self._node.create_subscription(
             String, ERROR_TOPIC, self._on_error, 10)
+
+    def _on_calibration_complete(self, msg: Bool) -> None:
+        self._calibration_complete = msg.data
 
     def _on_control(self, msg: String) -> None:
         """control_state 구독 콜백 — 판단은 하지 않고 큐에 적재만 한다."""
@@ -252,17 +271,18 @@ class ControlAndErrorMonitor:
 
                     result_future.add_done_callback(_on_result)
 
-                # CAL/RUN은 self-loop(대기만)와 외부 재진입(실제 수행)을
-                # 구분해야 해서 goal에 그 판단을 실어 보낸다 — RUN이 이게
-                # 없으면 완주 후에도 sw_bits가 RUN이면 매번 처음부터
-                # 재주행해버린다(확인된 버그). ALIGN은 아직 이 구분이
-                # 필요 없어 빈 Goal() 그대로.
+                # CAL/ALIGN/RUN 모두 self-loop(대기만)와 외부 재진입(실제 수행)을
+                # 구분해야 해서 goal에 그 판단을 실어 보낸다 — 이게 없으면
+                # 완주 후에도 sw_bits가 그대로면 매번 처음부터 재수행해버린다
+                # (RUN에서 확인된 버그, ALIGN/CAL도 동일 패턴 적용).
                 if action_type is Calibrate:
                     goal = Calibrate.Goal(self_loop=is_self_loop)
+                elif action_type is Align:
+                    goal = Align.Goal(self_loop=is_self_loop)
                 elif action_type is Run:
                     goal = Run.Goal(self_loop=is_self_loop)
                 else:
-                    goal = action_type.Goal()
+                    goal = action_type.Goal()  # 방어용 — 현재 STATE_ACTIONS엔 해당 없음
                 client.send_goal_async(goal).add_done_callback(_on_goal_response)
 
         try:
@@ -320,6 +340,13 @@ class ControlAndErrorMonitor:
                 if target not in ALLOWED_TARGETS[current_state_name]:
                     # 순서 규칙 위반 — 전이 없이 그냥 무시하고 계속 대기(개별
                     # 응답 채널 없음 — 앱은 /robot_status의 current_state가 안 바뀌는 것으로 판단).
+                    continue
+
+                if target == "ALIGN" and not self._calibration_complete:
+                    # CAL을 한 번도 안 거쳤으면 ALIGN 진입 거부 — 위와 동일하게
+                    # 조용히 무시(별도 outcome/에러 없이 다음 이벤트 대기).
+                    self._node.get_logger().warning(
+                        'ALIGN 진입 거부: 캘리브레이션 미완료')
                     continue
 
                 self._publish_status(target, False, "")
