@@ -59,8 +59,11 @@ class ImuYawCorrector(Node):
         # calibration_action_server.py가 늦게 뜨는 구독자를 위해 이 값을 1초마다
         # 계속 재발행하므로(YAW_OFFSET_PUBLISH_PERIOD_SEC), 실제로 바뀔 때만
         # 로그를 남긴다 — 안 그러면 CAL 완료 후 로그가 끝없이 반복된다.
+        # 부동소수점을 `!=`로 엄격 비교하면 통신 왕복/재계산 과정의 미세한
+        # 오차만으로도 "바뀐 것"으로 오판할 수 있어, 로그 표시 정밀도(소수점
+        # 둘째자리, deg)를 기준으로 실질적인 변화만 로그로 남긴다.
         new_offset = float(msg.data)
-        if new_offset != self._yaw_offset:
+        if abs(math.degrees(new_offset - self._yaw_offset)) >= 0.01:
             self.get_logger().info(
                 f'[IMU_YAW_CORRECTOR] yaw_offset set to {math.degrees(new_offset):.2f} deg')
         self._yaw_offset = new_offset
