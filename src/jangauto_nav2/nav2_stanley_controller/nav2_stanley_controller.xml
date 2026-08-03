@@ -1,0 +1,9 @@
+<class_libraries>
+    <library path="nav2_stanley_controller">
+        <class type="nav2_stanley_controller::StanleyController" base_class_type="nav2_core::Controller">
+            <description>
+                nav2_stanley_controller (nav2_regulated_pure_pursuit_controller 포크, 조향 로직은 향후 Stanley로 교체 예정)
+            </description>
+        </class>
+    </library>
+</class_libraries>

@@ -24,6 +24,10 @@
   <!-- planner_server가 런타임에 pluginlib로 로드하는 커스텀 전역 플래너
        (PLAN.md Part 2 — nav2_core::GlobalPlanner 구현, apt 패키지 아님). -->
   <exec_depend>nav2_straightline_planner</exec_depend>
+  <!-- controller_server가 런타임에 pluginlib로 로드하는 커스텀 컨트롤러
+       (nav2_regulated_pure_pursuit_controller 1.3.12를 워크스페이스로
+       vendoring, apt 패키지 아님 — 조향 로직을 직접 고치기 위함). -->
+  <exec_depend>nav2_stanley_controller</exec_depend>
 
   <test_depend>ament_lint_common</test_depend>
   <test_depend>ament_lint_auto</test_depend>
