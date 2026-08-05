@@ -73,7 +73,7 @@ Or start by creating a workspace and cloning the template repository:
 1. Launch the simulation
 
     ```bash
-    ros2 launch jangauto_bringup tracked_v3.launch.py
+    ros2 launch jangauto_bringup tracked_v3_simul.launch.py
     ```
 
 For a more detailed guide on using this template see [documentation](https://gazebosim.org/docs/latest/ros_gz_project_template_guide).

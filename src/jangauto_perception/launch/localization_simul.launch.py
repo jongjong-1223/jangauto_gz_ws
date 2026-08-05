@@ -13,7 +13,7 @@
   보정 전 토픽을 그대로 씀, `imu_yaw_corrector.py` 참고).
 - 글로벌 EKF: GPS+IMU를 융합해 드리프트 없는 `map` 프레임 추정.
 
-EKF 두 노드는 같은 `ekf.yaml` 설정 파일을 공유하되, remapping으로 입출력
+EKF 두 노드는 같은 `ekf_simul.yaml` 설정 파일을 공유하되, remapping으로 입출력
 토픽만 다르게 잡아 로컬/글로벌 두 EKF 인스턴스를 구분한다.
 """
 import os
@@ -53,7 +53,7 @@ def generate_launch_description():
         executable="ekf_node",
         name="ekf_local",
         output="screen",
-        parameters=[os.path.join(pkg_project_perception, "config", "ekf.yaml"),
+        parameters=[os.path.join(pkg_project_perception, "config", "ekf_simul.yaml"),
                     {'use_sim_time': True}
                     ],
         remappings=[('odometry/filtered', 'odom')]  # nav2 odom_topic(/odom)에 맞춤
@@ -65,7 +65,7 @@ def generate_launch_description():
         executable="ekf_node",
         name="ekf_global",
         output="screen",
-        parameters=[os.path.join(pkg_project_perception, "config", "ekf.yaml"),
+        parameters=[os.path.join(pkg_project_perception, "config", "ekf_simul.yaml"),
                     {'use_sim_time': True}
                     ],
         remappings=[('odometry/filtered', 'odometry/global')]  # 출력 토픽 이름을 변경
@@ -77,7 +77,7 @@ def generate_launch_description():
         executable="navsat_transform_node",
         name="navsat_transform",
         output="screen",
-        parameters=[os.path.join(pkg_project_perception, "config", "ekf.yaml"),
+        parameters=[os.path.join(pkg_project_perception, "config", "ekf_simul.yaml"),
                     {'use_sim_time': True}
                     ],
         remappings=[

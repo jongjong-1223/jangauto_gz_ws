@@ -1,3 +1,8 @@
+"""로봇 URDF/SDF 기반 robot_state_publisher + 센서 프레임 static TF 발행(시뮬용).
+
+description_real.launch.py와 static TF 값(물리적 장착 오프셋)은 동일 — 차이는
+use_sim_time(Gazebo 클럭 사용 여부)뿐.
+"""
 import os
 
 from ament_index_python.packages import get_package_share_directory

@@ -35,7 +35,7 @@
   고정된 출력 토픽 `cmd_vel_smoothed`로 발행한다(이건 remap이 아니라
   `nav2_velocity_smoother` 코드가 입력과 다른 이름으로 발행하도록 만들어져
   있는 것). `collision_monitor`는 이 `cmd_vel_smoothed`를 `cmd_vel_in_topic`
-  파라미터(`nav2_params.yaml`)로 구독해서 근접 충돌 예측 시 감속시킨 뒤,
+  파라미터(`nav2_params_simul.yaml`)로 구독해서 근접 충돌 예측 시 감속시킨 뒤,
   `cmd_vel_out_topic` 파라미터로 지정된 `cmd_vel_nav_out`을 최종 발행한다 —
   즉 `controller_server`/`behavior_server` -> `cmd_vel_nav` ->
   `velocity_smoother` -> `cmd_vel_smoothed` -> `collision_monitor` ->
@@ -71,7 +71,7 @@ from nav2_common.launch import RewrittenYaml
 
 
 def generate_launch_description():
-    # 기본 파라미터 파일(nav2_params.yaml)/BT XML 경로를 구성하는 데 쓰는 공유 디렉터리.
+    # 기본 파라미터 파일(nav2_params_simul.yaml)/BT XML 경로를 구성하는 데 쓰는 공유 디렉터리.
     bringup_dir = get_package_share_directory('jangauto_navigation2')
 
     # 아래 DeclareLaunchArgument들이 실제 값을 선언하며, 여기서는 참조 핸들만 만든다.
@@ -153,7 +153,7 @@ def generate_launch_description():
 
     declare_params_file_cmd = DeclareLaunchArgument(
         'params_file',
-        default_value=os.path.join(bringup_dir, 'params', 'nav2_params.yaml'),
+        default_value=os.path.join(bringup_dir, 'params', 'nav2_params_simul.yaml'),
         description='Full path to the ROS2 parameters file to use for all launched nodes',
     )
 

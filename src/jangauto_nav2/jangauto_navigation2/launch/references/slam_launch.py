@@ -16,7 +16,7 @@
 
 **참고용 — 미사용.** 이 프로젝트는 SLAM 대신 GPS+IMU EKF(jangauto_perception)로
 map->odom->base_link TF를 직접 발행하고, 정적 맵도 jangauto_uwb_driver가 발행하는
-가상 맵으로 대신한다(`nav2_params.yaml` 헤더 주석 참고). 이 파일은 stock nav2_bringup
+가상 맵으로 대신한다(`nav2_params_simul.yaml` 헤더 주석 참고). 이 파일은 stock nav2_bringup
 구조 문서화 및 향후 참고용으로만 `launch/references/`에 보관한다.
 
 ## 역할
@@ -25,7 +25,7 @@ map->odom->base_link TF를 직접 발행하고, 정적 맵도 jangauto_uwb_drive
   slam_toolbox의 역할이고, 이 그룹은 "저장" 서비스만 담당).
 - `start_slam_toolbox_cmd`: slam_toolbox 패키지의 `online_sync_launch.py`를
   include해 실제 SLAM(스캔 매칭 기반 지도 생성 + 위치추정)을 수행한다.
-  - `params_file`(nav2_params.yaml)에 `slam_toolbox` 노드 설정이 있는지를
+  - `params_file`(nav2_params_simul.yaml)에 `slam_toolbox` 노드 설정이 있는지를
     `HasNodeParams`로 검사해서, 있으면 그 파일을 slam_toolbox에 그대로
     전달하고, 없으면 전달하지 않아 slam_toolbox 자체 기본값을 쓰게 한다
     (`params_file`을 무조건 넘기면, 그 안에 slam_toolbox 섹션이 없을 때
@@ -89,7 +89,7 @@ def generate_launch_description():
 
     declare_params_file_cmd = DeclareLaunchArgument(
         'params_file',
-        default_value=os.path.join(bringup_dir, 'params', 'nav2_params.yaml'),
+        default_value=os.path.join(bringup_dir, 'params', 'nav2_params_simul.yaml'),
         description='Full path to the ROS2 parameters file to use for all launched nodes',
     )
 

@@ -128,7 +128,7 @@ COVERAGE_PATH_ALLOWED_MODES = {'STOP', 'KEY', 'CAL'}
 GENERATE_COVERAGE_PATH_ACTION_NAME = 'generate_coverage_path'
 SELECTED_COVERAGE_PATH_TOPIC = '/jangauto_mission/selected_coverage_path'
 
-# 진단 최근성 판정 임계값(초) — gps_covariance_filler.py와 동일한 관례
+# 진단 최근성 판정 임계값(초) — gps_covariance_filler_simul.py와 동일한 관례
 # (time.monotonic() 기반, 없음=ERROR/오래됨=WARN/정상=OK).
 MAP_STALE_TIMEOUT_SEC = 3.0
 ROBOT_STATUS_STALE_TIMEOUT_SEC = 3.0
@@ -307,7 +307,7 @@ class AppWebSocketBridge(Node):
         # 이 캐시가 그 역할을 대신함).
         self._last_app_status_json = None
 
-        # 진단(diagnostic_updater)용 최근 수신 시각 — gps_covariance_filler.py와 동일한
+        # 진단(diagnostic_updater)용 최근 수신 시각 — gps_covariance_filler_simul.py와 동일한
         # time.monotonic() 기반 최근성 판정 패턴. 각 _on_* 콜백에서만 갱신한다.
         self._last_map_msg_monotonic = None
         self._last_robot_status_monotonic = None
@@ -327,7 +327,7 @@ class AppWebSocketBridge(Node):
         # mission_state_machine.py가 /robot_status를 RELIABLE+TRANSIENT_LOCAL(latched)로
         # 발행하므로 구독 쪽도 durability를 맞춰야 late-join 시 마지막 값을 실제로 받는다
         # (구독 쪽이 기본 VOLATILE이면 QoS는 호환되어 에러는 안 나지만, 늦게 구독해도 과거
-        # 값을 재생해주지 않고 그 다음 변화부터만 받게 됨 — 실행 확인됨). uwb_virtual_map_publisher.py
+        # 값을 재생해주지 않고 그 다음 변화부터만 받게 됨 — 실행 확인됨). uwb_virtual_map_publisher_simul.py
         # 의 /map도 같은 latched 계약(map_server 방식)이라 같은 QoS를 재사용한다.
         latched_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -1042,7 +1042,7 @@ class AppWebSocketBridge(Node):
         return stat
 
     def _staleness_diag(self, stat, last_monotonic, timeout_sec, label):
-        """gps_covariance_filler.py와 동일한 최근성 판정 헬퍼 —
+        """gps_covariance_filler_simul.py와 동일한 최근성 판정 헬퍼 —
         없음=ERROR / timeout_sec 초과=WARN / 정상=OK."""
         if last_monotonic is None:
             stat.summary(DiagnosticStatus.ERROR, f'No {label} received yet')

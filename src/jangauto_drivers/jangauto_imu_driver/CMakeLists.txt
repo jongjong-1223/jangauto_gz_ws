@@ -1,12 +1,10 @@
 cmake_minimum_required(VERSION 3.5)
-project(jangauto_uwb_driver)
+project(jangauto_imu_driver)
 
 find_package(ament_cmake REQUIRED)
 
 install(PROGRAMS
-  scripts/uwb_virtual_map_publisher_simul.py
-  scripts/uwb_publisher_real.py
-  scripts/uwb_cov_filter_real.py
+  scripts/imu_real.py
   DESTINATION lib/${PROJECT_NAME}
   PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ
 )

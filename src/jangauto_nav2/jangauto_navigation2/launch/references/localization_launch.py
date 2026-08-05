@@ -15,7 +15,7 @@
 """map_server + amcl로 (SLAM 없이) 기존 지도 위에서 위치추정을 담당하는 launch 파일.
 
 **참고용 — 미사용.** 이 프로젝트는 AMCL 대신 GPS+IMU EKF(jangauto_perception)로
-map->odom->base_link TF를 직접 발행한다(`nav2_params.yaml` 헤더 주석 참고). 이 파일은
+map->odom->base_link TF를 직접 발행한다(`nav2_params_simul.yaml` 헤더 주석 참고). 이 파일은
 stock nav2_bringup 구조 문서화 및 향후 참고용으로만 `launch/references/`에 보관한다.
 
 ## 역할
@@ -55,7 +55,7 @@ from nav2_common.launch import RewrittenYaml
 
 
 def generate_launch_description():
-    # 기본 파라미터 파일(nav2_params.yaml) 경로를 구성하는 데 쓰는 패키지 공유 디렉터리.
+    # 기본 파라미터 파일(nav2_params_simul.yaml) 경로를 구성하는 데 쓰는 패키지 공유 디렉터리.
     bringup_dir = get_package_share_directory('jangauto_navigation2')
 
     # 아래 DeclareLaunchArgument들이 실제 값을 선언하며, 여기서는 참조 핸들만 만든다.
@@ -119,7 +119,7 @@ def generate_launch_description():
 
     declare_params_file_cmd = DeclareLaunchArgument(
         'params_file',
-        default_value=os.path.join(bringup_dir, 'params', 'nav2_params.yaml'),
+        default_value=os.path.join(bringup_dir, 'params', 'nav2_params_simul.yaml'),
         description='Full path to the ROS2 parameters file to use for all launched nodes',
     )
 

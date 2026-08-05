@@ -1,18 +1,17 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>jangauto_uwb_driver</name>
+  <name>jangauto_motor_driver</name>
   <version>0.0.0</version>
-  <description>(시뮬) 가상 UWB 데이터를 nav2용 OccupancyGrid로 변환 발행 + (실기체) 시리얼 UWB 태그 위치를 절대측위 소스(/abs_xy_fixed)로 발행</description>
+  <description>실기체 모터 컨트롤러와 시리얼로 통신해 cmd_vel_out을 좌/우 트랙 RPM 명령으로 변환·송신(시뮬은 Gazebo diff_drive 플러그인이 대신함)</description>
   <maintainer email="jangjw147147@gmail.com">jungwoo</maintainer>
   <license>Apache 2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>nav_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>jangauto_msg</exec_depend>
   <exec_depend>python3-serial</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>

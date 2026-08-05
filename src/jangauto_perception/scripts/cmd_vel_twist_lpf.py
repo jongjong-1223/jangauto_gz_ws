@@ -10,7 +10,7 @@
   만든다.
 - `ekf_node`의 `twistN` 입력은 `geometry_msgs/TwistWithCovarianceStamped`
   타입이어야 하므로(공분산 없는 `Twist`는 직접 못 물림), 필터링한 값에
-  공분산을 채워 `cmd_vel_twist_filtered`로 재발행한다 — `ekf.yaml`의
+  공분산을 채워 `cmd_vel_twist_filtered`로 재발행한다 — `ekf_simul.yaml`의
   `ekf_local.twist0`가 이 토픽을 구독.
 - `linear.x`/`angular.z`는 `cmd_vel_out`을 필터링한 값을 그대로 쓴다.
   `angular.z` 공분산은 일부러 크게 잡아서(신뢰 낮게) IMU 자이로가 yaw rate
@@ -35,7 +35,7 @@ from diagnostic_msgs.msg import DiagnosticStatus
 
 CMD_VEL_IN_TOPIC = 'cmd_vel_out'
 TWIST_OUT_TOPIC = 'cmd_vel_twist_filtered'
-BASE_FRAME_ID = 'base_link'   # ekf.yaml의 base_link_frame과 일치해야 함
+BASE_FRAME_ID = 'base_link'   # ekf_simul.yaml의 base_link_frame과 일치해야 함
 
 # cmd_vel_out이 이 시간(초) 이상 안 오면 WARN(끊김)으로 판정
 STALE_TIMEOUT_SEC = 1.0
@@ -108,7 +108,7 @@ class CmdVelTwistLpf(Node):
         self._pub.publish(out)
 
     def _diagnostics_callback(self, stat):
-        """`gps_covariance_filler.py`와 동일한 최근성 판정 패턴."""
+        """`gps_covariance_filler_simul.py`와 동일한 최근성 판정 패턴."""
         if self._last_msg_monotonic is None:
             stat.summary(DiagnosticStatus.ERROR, 'No cmd_vel_out received yet')
         elif (time.monotonic() - self._last_msg_monotonic) > STALE_TIMEOUT_SEC:

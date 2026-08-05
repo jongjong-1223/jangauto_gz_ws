@@ -16,7 +16,7 @@ def generate_launch_description():
 
     uwb_virtual_map_node = Node(
         package="jangauto_uwb_driver",
-        executable="uwb_virtual_map_publisher.py",
+        executable="uwb_virtual_map_publisher_simul.py",
         name="uwb_virtual_map_publisher",
         output="screen",
         parameters=[{

@@ -14,9 +14,9 @@
 
 """Nav2 스택 전체를 한 번에 띄우는 최상위 bringup launch 파일.
 
-**참고용 — 이 프로젝트의 실제 bringup(`jangauto_bringup/launch/tracked_v3.launch.py`)은
+**참고용 — 이 프로젝트의 실제 bringup(`jangauto_bringup/launch/tracked_v3_simul.launch.py`)은
 이 파일을 쓰지 않는다.** 로컬라이제이션이 GPS+IMU EKF로 대체되어 AMCL/SLAM이 필요
-없어졌고(`nav2_params.yaml` 헤더 주석 참고), 실제로는 `navigation_launch.py`만 직접
+없어졌고(`nav2_params_simul.yaml` 헤더 주석 참고), 실제로는 `navigation_launch.py`만 직접
 include한다. 이 파일과 그것이 참조하는 `localization_launch.py`/`slam_launch.py`는
 stock nav2_bringup 구조 문서화 및 향후 참고용으로만 `launch/references/`에 보관한다.
 
@@ -158,7 +158,7 @@ def generate_launch_description():
 
     declare_params_file_cmd = DeclareLaunchArgument(
         'params_file',
-        default_value=os.path.join(bringup_dir, 'params', 'nav2_params.yaml'),
+        default_value=os.path.join(bringup_dir, 'params', 'nav2_params_simul.yaml'),
         description='Full path to the ROS2 parameters file to use for all launched nodes',
     )
 

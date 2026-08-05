@@ -63,11 +63,11 @@ namespace nav2_straightline_planner
 // - Nav2 planner_server가 런타임에 pluginlib으로 로드하는 전역 경로 플래너.
 //   등록 이름은 `global_planner_plugin.xml`에 정의된
 //   "nav2_straightline_planner/StraightLine"(jangauto_navigation2의
-//   nav2_params.yaml `planner_server.GridBased.plugin`에서 참조).
+//   nav2_params_simul.yaml `planner_server.GridBased.plugin`에서 참조).
 // - 코스트맵을 탐색(Dijkstra/A* 등)하지 않고 시작점→목표점을 그대로
 //   직선으로 잇는 가장 단순한 플래너다(NavfnPlanner/SmacPlanner의 대체 경량판).
 //   이 프로젝트에서 쓰는 이유: 이동 구간이 이미 알려진 웨이포인트 직선
-//   구간이라 코스트맵 탐색 자체가 불필요하기 때문(nav2_params.yaml 주석 참고).
+//   구간이라 코스트맵 탐색 자체가 불필요하기 때문(nav2_params_simul.yaml 주석 참고).
 // - Nav2 lifecycle 노드 규약에 맞춰 configure/activate/deactivate/cleanup
 //   4단계로 관리되지만, 이 플래너는 상태가 없어 실제로는 로그만 남긴다.
 class StraightLine : public nav2_core::GlobalPlanner

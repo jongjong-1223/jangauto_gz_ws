@@ -63,22 +63,22 @@ def generate_launch_description():
 
     description = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(pkg_project_description, 'launch', 'description.launch.py')),
+            os.path.join(pkg_project_description, 'launch', 'description_simul.launch.py')),
     )
 
     localization = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(pkg_project_perception, 'launch', 'localization.launch.py')),
+            os.path.join(pkg_project_perception, 'launch', 'localization_simul.launch.py')),
     )
 
     gps = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(pkg_project_gps_driver, 'launch', 'gps.launch.py')),
+            os.path.join(pkg_project_gps_driver, 'launch', 'gps_simul.launch.py')),
     )
 
     uwb = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(pkg_project_uwb_driver, 'launch', 'uwb.launch.py')),
+            os.path.join(pkg_project_uwb_driver, 'launch', 'uwb_simul.launch.py')),
     )
 
     # AMCL/SLAM 분기가 있는 bringup_launch.py 대신 navigation_launch.py만 include —

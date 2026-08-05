@@ -4,7 +4,7 @@ project(jangauto_gps_driver)
 find_package(ament_cmake REQUIRED)
 
 install(PROGRAMS
-  scripts/gps_covariance_filler.py
+  scripts/gps_covariance_filler_simul.py
   DESTINATION lib/${PROJECT_NAME}
   PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ
 )

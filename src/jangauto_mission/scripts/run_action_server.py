@@ -86,7 +86,7 @@ GOAL_CHECKER_PARAM_SERVICE = '/controller_server/set_parameters'
 YAW_GOAL_TOLERANCE_PARAM = 'general_goal_checker.yaw_goal_tolerance'
 
 TURN_ANGLE_THRESHOLD_RAD = 0.05          # 이 이하 회전은 곡선 추종으로 흡수
-NORMAL_YAW_GOAL_TOLERANCE_RAD = 0.25     # nav2_params.yaml 기본값과 동일
+NORMAL_YAW_GOAL_TOLERANCE_RAD = 0.25     # nav2_params_simul.yaml 기본값과 동일
 TIGHT_YAW_GOAL_TOLERANCE_RAD = 0.05      # 두둑 회전 지점: 정밀하게 맞춰야 함
 CANCEL_POLL_PERIOD_SEC = 0.1      # 서브골 완료/취소 확인 폴링 주기
 IDLE_POLL_PERIOD_SEC = 0.1        # self-loop 대기 중 취소 확인 주기

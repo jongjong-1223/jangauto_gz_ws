@@ -1,0 +1,454 @@
+# amcl은 사용하지 않는다 — 로컬라이제이션은 jangauto_perception의 UWB+IMU EKF
+# 파이프라인(ekf_real.yaml)이 map->odom->base_link TF를 직접 발행한다.
+# AMCL을 같이 띄우면 map->odom TF를 두 시스템이 동시에 발행해 충돌한다.
+#
+# 실기체 프로파일 — nav2_params_simul.yaml과 시작값이 대부분 동일하다(로봇
+# 물리 치수·액추에이터 한계는 시뮬/실기체가 같은 값이어야 하므로). 예외:
+# - 뎁스카메라 관측 파라미터(`/front_depth_camera/points` 토픽, raytrace/
+#   obstacle range 등)는 실제 카메라 드라이버/토픽이 아직 정해지지 않아
+#   시뮬과 동일한 이름을 placeholder로 유지 — 실제 카메라 붙이면 갱신 필요.
+# - 그 외 컨트롤러/코스트맵/속도 한계 값들도 실측 주행 결과 보고 재튜닝
+#   필요(시뮬 튜닝값을 시작점으로만 사용).
+
+bt_navigator:
+  ros__parameters:
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    wait_for_service_timeout: 1000
+    action_server_result_timeout: 900.0
+    navigators: ["navigate_to_pose", "navigate_through_poses"]
+    navigate_to_pose:
+      plugin: "nav2_bt_navigator::NavigateToPoseNavigator"
+    navigate_through_poses:
+      plugin: "nav2_bt_navigator::NavigateThroughPosesNavigator"
+    # 'default_nav_to_pose_bt_xml' and 'default_nav_through_poses_bt_xml' are injected at
+    # launch time by navigation_launch.py (see 'default_nav_to_pose_bt_xml' /
+    # 'default_nav_through_poses_bt_xml' launch args), pointing to this package's
+    # behavior_trees/navigate_to_pose.xml and behavior_trees/navigate_through_poses.xml,
+    # which start as copies of the nav2_bt_navigator defaults for local customization.
+
+    # plugin_lib_names is used to add custom BT plugins to the executor (vector of strings).
+    # Built-in plugins are added automatically
+    # plugin_lib_names: []
+
+    error_code_names:
+      - compute_path_error_code
+      - follow_path_error_code
+
+controller_server:
+  ros__parameters:
+    controller_frequency: 5.0
+    costmap_update_timeout: 0.30
+    min_x_velocity_threshold: 0.01
+    min_y_velocity_threshold: 0.5
+    min_theta_velocity_threshold: 0.01
+    failure_tolerance: 0.3
+    progress_checker_plugins: ["progress_checker"]
+    goal_checker_plugins: ["general_goal_checker"] # "precise_goal_checker"
+    controller_plugins: ["FollowPath"]
+    use_realtime_priority: false
+
+    # Progress checker parameters
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 1.0
+      movement_time_allowance: 10.0
+    # Goal checker parameters
+    #precise_goal_checker:
+    #  plugin: "nav2_controller::SimpleGoalChecker"
+    #  xy_goal_tolerance: 0.25
+    #  yaw_goal_tolerance: 0.25
+    #  stateful: True
+    general_goal_checker:
+      stateful: True
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.25
+      yaw_goal_tolerance: 0.25
+    FollowPath:
+      # nav2_regulated_pure_pursuit_controller(RPP, nav2 1.3.12)를 워크스페이스로
+      # vendoring한 뒤 조향 알고리즘만 Stanley 방식으로 교체한 커스텀 패키지 —
+      # src/jangauto_nav2/nav2_stanley_controller. apt 패키지가 아니라 소스가
+      # 이 워크스페이스에 있어 직접 수정 가능하다.
+      # 경로 추종(순수추종 곡률)만 Stanley의 횡방향오차+헤딩오차 조향으로
+      # 바뀌었고, 속도 규제/제자리회전 게이트/충돌예측은 RPP 그대로 재사용.
+      # 급커브 시 자동 감속은 stanley_* 클램프가 아니라
+      # regulated_linear_scaling_min_radius/min_speed(RPP 파라미터, 곡률
+      # 입력만 Stanley 조향각에서 유도)가 담당한다.
+      # 아래 값들은 차체 치수(길이 1.1m x 폭 1.7m(트랙 바깥쪽) x 높이 0.5m,
+      # 외접반경 약 1.0m) 기준으로 튜닝됨(시뮬 값 그대로 — 실측 후 재튜닝 필요).
+      plugin: "nav2_stanley_controller::StanleyController"
+      desired_linear_vel: 0.5
+      lookahead_dist: 2.0
+      min_lookahead_dist: 1.5
+      max_lookahead_dist: 3.0
+      lookahead_time: 2.0
+      use_velocity_scaled_lookahead_dist: true
+      min_approach_linear_velocity: 0.10
+      approach_velocity_scaling_dist: 2.0
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 2.0
+      use_regulated_linear_velocity_scaling: true
+      use_cost_regulated_linear_velocity_scaling: false
+      regulated_linear_scaling_min_radius: 1.7
+      regulated_linear_scaling_min_speed: 0.10
+      use_rotate_to_heading: true
+      rotate_to_heading_min_angle: 0.785
+      rotate_to_heading_angular_vel: 0.6
+      max_angular_accel: 1.8
+      max_robot_pose_search_dist: 10.0
+      transform_tolerance: 0.1
+      # Stanley 조향 법칙(references/stanley_ref/stanley.c 포팅) 파라미터.
+      # wheelbase/track_width는 위 풋프린트 기준(세로 1.1m의 절반, 가로
+      # 1.7m), min_turning_radius=track_width/2는 피벗 회전 경계,
+      # max_steer_rad=atan(wheelbase/min_turning_radius)로 서로 기하학적
+      # 일관성을 맞춤. k/k_soft/max_track_speed는 레퍼런스 기본값 — 실제
+      # 주행 결과 보고 재튜닝 필요.
+      stanley_wheelbase: 0.55
+      stanley_track_width: 1.7
+      stanley_min_turning_radius: 0.85
+      stanley_max_track_speed: 1.0
+      stanley_k: 0.5
+      stanley_k_soft: 1.0
+      stanley_max_steer_rad: 0.574
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_link
+      rolling_window: true
+      width: 5
+      height: 5
+      resolution: 0.1
+      # tracked_v3 차체(길이 1.1m x 트랙 바깥쪽 폭 1.7m, base_link 중심) 기준 사각형 footprint.
+      footprint: "[[0.55, 0.85], [0.55, -0.85], [-0.55, -0.85], [-0.55, 0.85]]"
+      plugins: ["voxel_layer", "inflation_layer"]
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 3.0
+        inflation_radius: 1.0
+      voxel_layer:
+        plugin: "nav2_costmap_2d::VoxelLayer"
+        enabled: True
+        publish_voxel_map: True
+        origin_z: 0.0
+        z_resolution: 0.05
+        z_voxels: 16
+        max_obstacle_height: 2.0
+        mark_threshold: 0
+        # 라이다가 없어서(/scan은 dangling) 뎁스카메라 포인트클라우드로 대체.
+        # topic은 실제 카메라 드라이버가 아직 없어 시뮬과 동일한 이름을
+        # placeholder로 둠(파일 상단 주석 참고) — 실제 카메라 붙이면 갱신.
+        observation_sources: depth_cloud
+        depth_cloud:
+          topic: /front_depth_camera/points
+          # min_obstacle_height 없으면 카메라가 보는 바닥면(z~0)까지 전부 장애물로
+          # 잡혀서, 지도 전체가 하나의 거대한 점유 덩어리로 이어져버린다(시뮬
+          # 실측 확인됨 — 실기체에서도 재확인 필요). 0.05m로 바닥은 걸러내고
+          # 실제로 솟은 장애물만 남긴다.
+          min_obstacle_height: 0.05
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "PointCloud2"
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 2.5
+          obstacle_min_range: 0.0
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
+      always_send_full_costmap: True
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      # app_websocket_bridge.py가 이 costmap을 구독해 앱에 장애물을 보여주므로
+      # local_costmap(5Hz)/app 상태 브로드캐스트(5Hz)와 맞춰 5Hz로 갱신.
+      update_frequency: 5.0
+      publish_frequency: 5.0
+      global_frame: map
+      robot_base_frame: base_link
+      # tracked_v3 차체(길이 1.1m x 트랙 바깥쪽 폭 1.7m, base_link 중심) 기준 사각형 footprint.
+      footprint: "[[0.55, 0.85], [0.55, -0.85], [-0.55, -0.85], [-0.55, 0.85]]"
+      resolution: 0.10
+      track_unknown_space: true
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        # 라이다가 없어서(/scan은 dangling) 뎁스카메라 포인트클라우드로 대체.
+        # topic은 실제 카메라 드라이버가 아직 없어 시뮬과 동일한 이름을
+        # placeholder로 둠(파일 상단 주석 참고).
+        observation_sources: depth_cloud
+        depth_cloud:
+          topic: /front_depth_camera/points
+          min_obstacle_height: 0.05
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "PointCloud2"
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 2.5
+          obstacle_min_range: 0.0
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
+        # map_server 없이 jangauto_uwb_driver가 발행하는 가상 맵을 그대로 구독
+        # (uwb_real.launch.py에서도 동일 노드를 계속 띄움 — 실제 매핑 솔루션이
+        # 생기기 전까지의 placeholder, uwb_real.launch.py 주석 참고).
+        map_topic: "/map"
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 3.0
+        inflation_radius: 1.0
+      always_send_full_costmap: True
+
+# The yaml_filename does not need to be specified since it going to be set by defaults in launch.
+# If you'd rather set it in the yaml, remove the default "map" value in the tb3_simulation_launch.py
+# file & provide full path to map below. If CLI map configuration or launch default is provided, that will be used.
+# map_server:
+#   ros__parameters:
+#     yaml_filename: ""
+
+map_saver:
+  ros__parameters:
+    save_map_timeout: 5.0
+    free_thresh_default: 0.25
+    occupied_thresh_default: 0.65
+    map_subscribe_transient_local: True
+
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 20.0
+    planner_plugins: ["GridBased"]
+    costmap_update_timeout: 3.0
+    GridBased:
+      # 경로가 이미 알려진 웨이포인트 구간이라 코스트맵 탐색(NavFn)이 불필요 —
+      # 두 점을 그대로 잇는 nav2_straightline_planner로 대체(벤더링된 패키지,
+      # src/jangauto_nav2/nav2_straightline_planner/).
+      # 주의: pluginlib 조회 키는 global_planner_plugin.xml의 class `name` 속성
+      # ("/" 구분자, "nav2_straightline_planner/StraightLine") — C++ 타입명
+      # ("::" 구분자)을 그대로 쓰면 "does not exist" 에러가 남(실행 확인됨).
+      plugin: "nav2_straightline_planner/StraightLine"
+      interpolation_resolution: 0.3
+
+smoother_server:
+  ros__parameters:
+    smoother_plugins: ["simple_smoother"]
+    simple_smoother:
+      plugin: "nav2_smoother::SimpleSmoother"
+      tolerance: 1.0e-10
+      max_its: 1000
+      do_refinement: True
+
+behavior_server:
+  ros__parameters:
+    local_costmap_topic: local_costmap/costmap_raw
+    global_costmap_topic: global_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
+    global_footprint_topic: global_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait"]
+    spin:
+      plugin: "nav2_behaviors::Spin"
+    backup:
+      plugin: "nav2_behaviors::BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors::DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors::Wait"
+    assisted_teleop:
+      plugin: "nav2_behaviors::AssistedTeleop"
+    local_frame: odom
+    global_frame: map
+    robot_base_frame: base_link
+    transform_tolerance: 0.1
+    simulate_ahead_time: 2.0
+    # controller_server.FollowPath의 rotate_to_heading_angular_vel/max_angular_accel과
+    # 동일 기준(차체 폭 1.7m)으로 맞춤 — 바깥쪽 트랙 선속도가 순항속도(0.5m/s)를 넘지 않게.
+    max_rotational_vel: 0.6
+    min_rotational_vel: 0.4
+    rotational_acc_lim: 1.8
+
+waypoint_follower:
+  ros__parameters:
+    loop_rate: 20
+    stop_on_failure: false
+    action_server_result_timeout: 900.0
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: True
+      waypoint_pause_duration: 200
+
+route_server:
+  ros__parameters:
+    # The graph_filepath does not need to be specified since it going to be set by defaults in launch.
+    # If you'd rather set it in the yaml, remove the default "graph" value in the launch file(s).
+    # file & provide full path to map below. If graph config or launch default is provided, it is used
+    # graph_filepath: $(find-pkg-share nav2_route)/graphs/aws_graph.geojson
+    boundary_radius_to_achieve_node: 1.0
+    radius_to_achieve_node: 2.0
+    smooth_corners: true
+    operations: ["AdjustSpeedLimit", "ReroutingService", "CollisionMonitor"]
+    ReroutingService:
+      plugin: "nav2_route::ReroutingService"
+    AdjustSpeedLimit:
+      plugin: "nav2_route::AdjustSpeedLimit"
+    CollisionMonitor:
+      plugin: "nav2_route::CollisionMonitor"
+      max_collision_dist: 3.0
+    edge_cost_functions: ["DistanceScorer", "CostmapScorer"]
+    DistanceScorer:
+      plugin: "nav2_route::DistanceScorer"
+    CostmapScorer:
+      plugin: "nav2_route::CostmapScorer"
+
+velocity_smoother:
+  ros__parameters:
+    smoothing_frequency: 20.0
+    stamp_smoothed_velocity_with_smoothing_time: False
+    scale_velocities: False
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.5, 0.0, 2.0]
+    min_velocity: [-0.5, 0.0, -2.0]
+    max_accel: [2.5, 0.0, 3.2]
+    max_decel: [-2.5, 0.0, -3.2]
+    odom_topic: "odom"
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0
+
+collision_monitor:
+  ros__parameters:
+    base_frame_id: "base_footprint"
+    odom_frame_id: "odom"
+    cmd_vel_in_topic: "cmd_vel_smoothed"
+    # 주의: "cmd_vel_nav"는 navigation_launch.py가 controller_server/behavior_server
+    # 출력(스무딩 전 원시 값)의 remap 이름으로 이미 쓰고 있어서 재사용하면 충돌한다
+    # (그 값이 velocity_smoother 입력으로 다시 들어가는 내부 파이프).
+    # cmd_vel_arbiter(jangauto_mission)가 구독하는 최종 출력 이름은
+    # 그와 구분되는 "cmd_vel_nav_out".
+    cmd_vel_out_topic: "cmd_vel_nav_out"
+    state_topic: "collision_monitor_state"
+    transform_tolerance: 0.2
+    source_timeout: 1.0
+    base_shift_correction: True
+    stop_pub_timeout: 2.0
+    # Polygons represent zone around the robot for "stop", "slowdown" and "limit" action types,
+    # and robot footprint for "approach" action type.
+    # "approach" 하나만 있으면 안전 속도가 거리에 비례해서(distance/time_before_collision)
+    # 줄어들 뿐 정확히 0에 수렴하진 않아서, 방치하면 아주 느린 속도로나마 결국
+    # 접촉한다(시뮬 실측으로 확인됨). 그래서 실제 footprint([[0.55,0.85],...],
+    # local_costmap과 동일)보다 여유를 준 PolygonStop을 추가해 "approach"가 못
+    # 줄이는 마지막 구간을 하드스톱으로 막는다.
+    #
+    # PolygonStop 앞쪽 경계는 x=0.85로 잡는다(단순히 footprint+0.1이 아님) —
+    # front_depth_camera가 x=0.55(footprint 앞쪽과 동일 지점)에 near clip 0.1m로
+    # 달려있어서(시뮬 기준, 실제 카메라 스펙 확정 시 재확인 필요) 카메라가 볼 수
+    # 있는 최소 거리가 x≈0.65다. x=0.85로 두면 카메라가 확실히 볼 수 있는 구간
+    # (0.65~0.85) 안에서 먼저 min_points를 채워 STOP을 걸 수 있고, 실제 접촉
+    # 지점(x=0.55+박스 반폭)보다도 충분히 앞이라 안전 여유도 확보된다.
+    polygons: ["FootprintApproach", "PolygonStop"]
+    FootprintApproach:
+      type: "polygon"
+      action_type: "approach"
+      footprint_topic: "/local_costmap/published_footprint"
+      time_before_collision: 1.2
+      simulation_time_step: 0.1
+      min_points: 6
+      visualize: False
+      enabled: True
+    PolygonStop:
+      type: "polygon"
+      action_type: "stop"
+      points: "[[0.85, 0.85], [0.85, -0.85], [-0.55, -0.85], [-0.55, 0.85]]"
+      min_points: 4
+      visualize: False
+      enabled: True
+    # 라이다가 없어서(/scan은 dangling) 뎁스카메라 포인트클라우드로 대체.
+    # topic은 실제 카메라 드라이버가 아직 없어 시뮬과 동일한 이름을 placeholder로
+    # 둠(파일 상단 주석 참고). 파라미터명은 설치된 nav2_collision_monitor의
+    # PointCloud 소스 헤더(min_height_/max_height_/min_range_)로 직접 확인.
+    observation_sources: ["depth_cloud"]
+    depth_cloud:
+      type: "pointcloud"
+      topic: "/front_depth_camera/points"
+      min_height: 0.05
+      max_height: 2.0
+      min_range: 0.0
+      enabled: True
+
+docking_server:
+  ros__parameters:
+    controller_frequency: 50.0
+    initial_perception_timeout: 5.0
+    wait_charge_timeout: 5.0
+    dock_approach_timeout: 30.0
+    undock_linear_tolerance: 0.05
+    undock_angular_tolerance: 0.1
+    max_retries: 3
+    base_frame: "base_link"
+    fixed_frame: "odom"
+    dock_backwards: false
+    dock_prestaging_tolerance: 0.5
+
+    # Types of docks
+    dock_plugins: ['simple_charging_dock']
+    simple_charging_dock:
+      plugin: 'opennav_docking::SimpleChargingDock'
+      docking_threshold: 0.05
+      staging_x_offset: -0.7
+      use_external_detection_pose: true
+      use_battery_status: false # true
+      use_stall_detection: false # true
+
+      external_detection_timeout: 1.0
+      external_detection_translation_x: -0.18
+      external_detection_translation_y: 0.0
+      external_detection_rotation_roll: -1.57
+      external_detection_rotation_pitch: -1.57
+      external_detection_rotation_yaw: 0.0
+      filter_coef: 0.1
+
+    # Dock instances
+    # The following example illustrates configuring dock instances.
+    # docks: ['home_dock']  # Input your docks here
+    # home_dock:
+    #   type: 'simple_charging_dock'
+    #   frame: map
+    #   pose: [0.0, 0.0, 0.0]
+
+    controller:
+      k_phi: 3.0
+      k_delta: 2.0
+      v_linear_min: 0.15
+      v_linear_max: 0.15
+      use_collision_detection: true
+      costmap_topic: "local_costmap/costmap_raw"
+      footprint_topic: "local_costmap/published_footprint"
+      transform_tolerance: 0.1
+      projection_time: 5.0
+      simulation_step: 0.1
+      dock_collision_threshold: 0.3
+
+loopback_simulator:
+  ros__parameters:
+    base_frame_id: "base_footprint"
+    odom_frame_id: "odom"
+    map_frame_id: "map"
+    scan_frame_id: "base_scan"  # tb4_loopback_simulator.launch.py remaps to 'rplidar_link'
+    update_duration: 0.02
+    scan_range_min: 0.05
+    scan_range_max: 30.0
+    scan_angle_min: -3.1415
+    scan_angle_max: 3.1415
+    scan_angle_increment: 0.02617
+    scan_use_inf: true

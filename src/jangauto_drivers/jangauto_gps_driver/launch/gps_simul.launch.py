@@ -11,7 +11,7 @@ from launch_ros.actions import Node
 def generate_launch_description():
     gps_covariance_filler_node = Node(
         package="jangauto_gps_driver",
-        executable="gps_covariance_filler.py",
+        executable="gps_covariance_filler_simul.py",
         name="gps_covariance_filler",
         output="screen",
         remappings=[('navsat', '/navsat'), ('navsat_fixed', '/navsat_fixed')],

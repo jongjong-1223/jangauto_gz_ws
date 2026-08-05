@@ -1,0 +1,143 @@
+ekf_local:
+  ros__parameters:
+    frequency: 25.0              # Filter update rate
+    sensor_timeout: 0.5           # Timeout if no sensor data is received
+    two_d_mode: true              # If true, Z, roll, and pitch are ignored
+
+    # false(기본값)면 "odometry/filtered topic status" 진단 태스크는 등록만
+    # 되고 카운터를 올리는 tick()은 호출 안 돼서 diagnostic_aggregator에
+    # 영원히 "No events recorded" ERROR로 잡힘(robot_localization 자체
+    # 동작이며, 필터링/퍼블리시는 이 값과 무관하게 정상 동작함).
+    print_diagnostics: true
+
+    # Frame Settings
+    map_frame: map                # Global fixed frame
+    odom_frame: odom              # Drift-accumulating frame
+    base_link_frame: base_link    # Robot center frame
+    world_frame: odom             # Target frame for this filter (odom -> base_link)
+
+    # Sensor Input (IMU) — imu_yaw_corrector.py가 CAL이 계산한 yaw offset을
+    # 반영해 재발행하는 토픽(원본 /imu 아님, imu_yaw_corrector.py 참고).
+    # ekf_simul.yaml과 완전히 동일 — 하드웨어에 안 종속적인 블록.
+    imu0: imu_calibrated          # Topic name
+
+    # imu0_config: Determines which values to use.
+    # Format:
+              # X, Y, Z,             (Position)
+              # Roll, Pitch, Yaw,    (Orientation)
+              # Vx, Vy, Vz,          (Linear Velocity)
+              # Vroll, Vpitch, Vyaw, (Angular Velocity)
+              # Ax, Ay, Az           (Linear Acceleration)
+
+    imu0_config: [false, false, false,  # Position: Not used from IMU
+                  true,  true,  true,   # Orientation: Used
+                  false, false, false,  # Linear Vel: Not used
+                  true,  true,  true,   # Angular Vel: Used
+                  true,  true,  true]   # Linear Accel: Used
+
+    imu0_differential: false      # If true, uses difference from previous step
+    imu0_relative: false          # If true, sets initial measurement to 0
+    imu0_remove_gravitational_acceleration: true # Removes gravity vector
+
+    # Sensor Input (cmd_vel_out을 LPF+공분산 부착한 pseudo-velocity, cmd_vel_twist_lpf.py 발행)
+    # 바퀴 엔코더/UWB 속도 센서가 없어서 선속도(Vx)의 유일한 소스 — Vy는 트랙
+    # 로봇이 옆으로 미끄러지지 않는다는 비홀로노믹 제약(항상 0), Vyaw는 IMU
+    # 자이로와 겹치므로, 둘 다 covariance를 크게 잡아 IMU/실측보다 낮게 신뢰함.
+    twist0: cmd_vel_twist_filtered
+    twist0_config: [false, false, false,  # Position: N/A for twist
+                    false, false, false,  # Orientation: N/A for twist
+                    true,  true,  false,  # Linear Vel: Vx(pseudo-측정)+Vy(비홀로노믹 0 가정)
+                    false, false, true,   # Angular Vel: Vyaw만 사용(낮은 신뢰로)
+                    false, false, false]  # Linear Accel: N/A for twist
+    twist0_queue_size: 10
+    twist0_differential: false
+    twist0_relative: false
+
+    # Covariance Matrices
+    # Defines uncertainty. Lower values = higher trust in that variable.
+
+    # process_noise_covariance: Model uncertainty(대각 성분, 15개 = X,Y,Z,Roll,
+    # Pitch,Yaw,Vx,Vy,Vz,Vroll,Vpitch,Vyaw,Ax,Ay,Az 순 — robot_localization은
+    # 대각만 넣는 축약 표기를 지원). 값이 작을수록 "내 예측 모델을 더 믿고
+    # 새 측정에 덜 휘둘림" — 즉 이 값이 측정 covariance보다 너무 작으면
+    # Kalman gain이 낮아져서 아무리 좋은 센서가 들어와도 거의 반영 안 됨.
+    #
+    # Vx/Vy는 베이스라인 0.01 유지 — twist0(cmd_vel_twist_filtered)로 실제
+    # 속도 pseudo-measurement가 들어오는 지금은, 이걸 0.0001처럼 너무 낮게
+    # 잡으면 그 새 측정치가 필터에 거의 반영되지 못한다(로봇 최대 가속도
+    # 2.5 m/s²만 봐도 초당 0.01(m/s)² 분산 성장은 비현실적으로 작음).
+    # Ax/Ay/Az는 실제 IMU 가속도 측정이 직접 들어오는 축이라, 노이즈 많은
+    # 원본값에 덜 휘둘리도록 계속 낮게(0.001) 유지.
+    process_noise_covariance: [0.01,   0.01,   0.01,
+                               0.01,   0.01,   0.01,
+                               0.01,   0.01,   0.0001,
+                               0.01,   0.01,   0.01,
+                               0.001,  0.001,  0.001]
+
+    # initial_estimate_covariance: Uncertainty of starting state
+    initial_estimate_covariance: [1.0, 1.0, 1.0,
+                                  1e-3, 1e-3, 1e-3,
+                                  1.0, 1.0, 1.0,
+                                  1e-3, 1e-3, 1e-3,
+                                  1.0, 1.0, 1.0]
+
+ekf_global:
+  ros__parameters:
+    frequency: 25.0
+    sensor_timeout: 0.5
+    two_d_mode: true
+
+    # ekf_local과 동일한 이유로 필요(위 주석 참고).
+    print_diagnostics: true
+
+    # Frame Settings
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: map              # Target frame for this filter (map -> odom)
+
+    # Sensor Input (UWB + IMU) — 이 워크스페이스의 실제 절대위치 소스는 GPS가
+    # 아니라 UWB(jangauto_uwb_driver의 uwb_publisher_real.py ->
+    # uwb_cov_filter_real.py가 회전 중 covariance를 키워 IMU 위주로 신뢰하게
+    # 만든 뒤 /abs_xy_fixed로 발행). ekf_simul.yaml에서는 GPS 기반
+    # odom0(navsat_transform 경유)를 쓰지만, real은 navsat_transform 자체가
+    # 없다.
+    pose0: /abs_xy_fixed
+    pose0_config: [true,  true,  false,   # X,Y만 사용(UWB는 Z/orientation 없음)
+                   false, false, false,
+                   false, false, false,
+                   false, false, false,
+                   false, false, false]
+    pose0_queue_size: 10
+    pose0_differential: false
+    pose0_relative: false
+    pose0_rejection_threshold: 5.0
+
+    # ekf_local과 동일한 이유로 원본 /imu가 아닌 보정된 토픽 사용.
+    imu0: /imu_calibrated
+    imu0_config: [false, false, false,
+                  true,  true,  true,
+                  false, false, false,
+                  true,  true,  true,
+                  true,  true,  true]
+    imu0_remove_gravitational_acceleration: true
+
+    # Covariance Matrices
+    # UWB pose0의 실측 covariance는 uwb_cov_filter_real.py가 매 메시지마다
+    # 동적으로 덮어써서 넣어주므로(평소 2.0, 회전 중 999.0), 여기 process
+    # noise는 ekf_local과 같은 기본값으로 시작 — 실측 후 재튜닝 필요.
+    process_noise_covariance: [0.01, 0.01, 0.01,
+                               0.01, 0.01, 0.01,
+                               0.01, 0.01, 0.01,
+                               0.01, 0.01, 0.01,
+                               0.01, 0.01, 0.01]
+
+    initial_estimate_covariance: [1.0, 1.0, 1.0,
+                                  1e-3, 1e-3, 1e-3,
+                                  1.0, 1.0, 1.0,
+                                  1e-3, 1e-3, 1e-3,
+                                  1.0, 1.0, 1.0]
+
+# navsat_transform: GPS 기반 real 파이프라인엔 없음(UWB가 이미 map 프레임
+# 카르테시안 좌표를 직접 낸다) — ekf_simul.yaml에 있는 이 섹션은 real에서는
+# 대응하는 노드 자체를 launch하지 않으므로 제거.

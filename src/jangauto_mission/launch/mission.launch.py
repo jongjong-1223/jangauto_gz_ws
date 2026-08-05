@@ -13,7 +13,7 @@
   모듈 docstring 참고 — 앱은 선택 장비라 연결 안 됨이 STOP 사유가 아님).
 
 cmd_vel 관련 저수준 제어(`cmd_vel_arbiter`, `key_manual_driver`)는
-`jangauto_control` 패키지로 분리됐다 — `tracked_v3.launch.py`가 이 launch 파일과
+`jangauto_control` 패키지로 분리됐다 — `tracked_v3_simul.launch.py`가 이 launch 파일과
 `jangauto_control/launch/control.launch.py`를 둘 다 include한다.
 """
 from launch import LaunchDescription
